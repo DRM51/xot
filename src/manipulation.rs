@@ -675,8 +675,14 @@ impl Xot {
         let clone = self.clone_node(node);
         // add any prefixes from outer scope we may need
         if self.is_element(clone) {
+            // Sort by prefix id for deterministic namespace node ordering.
+            // inherited_prefixes() returns an AHashMap whose iteration order
+            // varies across runs due to random seeding.
+            let mut sorted_prefixes: Vec<_> = prefixes.into_iter().collect();
+            sorted_prefixes.sort_by_key(|(prefix, _)| *prefix);
+
             let mut namespaces = self.namespaces_mut(clone);
-            for (prefix, ns) in prefixes {
+            for (prefix, ns) in sorted_prefixes {
                 if namespaces.contains_key(prefix) {
                     continue;
                 }
