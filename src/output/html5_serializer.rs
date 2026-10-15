@@ -117,9 +117,9 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
     ) -> Result<(), Error> {
         let data = self.render_output(node, &output)?;
         if data.space {
-            w.write_all(b" ").unwrap();
+            w.write_all(b" ")?;
         }
-        w.write_all(data.text.as_bytes()).unwrap();
+        w.write_all(data.text.as_bytes())?;
         Ok(())
     }
 
@@ -253,24 +253,25 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                 }
             }
             Text(text) => {
-                // a text node is always a child of an element
-                let parent = self.xot.parent(node).unwrap();
-                let element = self.xot.element(parent).unwrap();
-                let value = if self
-                    .html5_elements
-                    .no_escape_names
-                    .matches(self.xot, element.name())
-                {
-                    serialize_text_no_escape((*text).into(), &self.normalizer).to_string()
-                } else if self.cdata_section_names.contains(&element.name()) {
-                    serialize_cdata((*text).into(), &self.normalizer).to_string()
-                } else if self
-                    .html5_elements
-                    .is_html_element(self.xot, element.name())
-                {
-                    serialize_text_html((*text).into(), &self.normalizer).to_string()
-                } else {
-                    serialize_text((*text).into(), &self.normalizer, false).to_string()
+                // a text node is usually a child of an element, but it can also
+                // be a child of a document or have no parent at all; text
+                // outside any element is escaped as in an HTML element
+                let element_name = self
+                    .xot
+                    .parent(node)
+                    .and_then(|parent| self.xot.element(parent))
+                    .map(|element| element.name());
+                let value = match element_name {
+                    Some(name) if self.html5_elements.no_escape_names.matches(self.xot, name) => {
+                        serialize_text_no_escape((*text).into(), &self.normalizer).to_string()
+                    }
+                    Some(name) if self.cdata_section_names.contains(&name) => {
+                        serialize_cdata((*text).into(), &self.normalizer).to_string()
+                    }
+                    Some(name) if !self.html5_elements.is_html_element(self.xot, name) => {
+                        serialize_text((*text).into(), &self.normalizer, false).to_string()
+                    }
+                    _ => serialize_text_html((*text).into(), &self.normalizer).to_string(),
                 };
                 OutputToken {
                     space: false,

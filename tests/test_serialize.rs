@@ -1,4 +1,6 @@
-use xot::Xot;
+use std::io;
+
+use xot::{output, Error, Xot};
 
 #[test]
 fn test_serialize_node() {
@@ -217,4 +219,103 @@ fn test_serialize_text_fragment() {
     let fragment = xot.parse_fragment(r#"text"#).unwrap();
     let serialized = xot.to_string(fragment).unwrap();
     assert_eq!(serialized, r#"text"#);
+}
+
+#[test]
+fn test_serialize_text_without_parent() {
+    let mut xot = Xot::new();
+    let text = xot.new_text("a<b");
+    assert_eq!(xot.to_string(text).unwrap(), "a&lt;b");
+}
+
+#[test]
+fn test_serialize_text_without_parent_cdata_section_elements() {
+    let mut xot = Xot::new();
+    let a = xot.add_name("a");
+    let text = xot.new_text("a<b");
+    let serialized = xot
+        .serialize_xml_string(
+            output::xml::Parameters {
+                cdata_section_elements: vec![a],
+                ..Default::default()
+            },
+            text,
+        )
+        .unwrap();
+    assert_eq!(serialized, "a&lt;b");
+}
+
+#[test]
+fn test_serialize_text_without_parent_pretty() {
+    let mut xot = Xot::new();
+    let text = xot.new_text("a<b");
+    let serialized = xot
+        .serialize_xml_string(
+            output::xml::Parameters {
+                indentation: Some(Default::default()),
+                ..Default::default()
+            },
+            text,
+        )
+        .unwrap();
+    assert_eq!(serialized, "a&lt;b");
+}
+
+#[test]
+fn test_tokens_text_without_parent() {
+    let mut xot = Xot::new();
+    let text = xot.new_text("a<b");
+    let tokens = xot
+        .tokens(text, Default::default(), output::NoopNormalizer)
+        .map(|(_, _, token)| token.text)
+        .collect::<Vec<_>>();
+    assert_eq!(tokens, vec!["a&lt;b"]);
+}
+
+#[test]
+fn test_html5_text_without_parent() {
+    let mut xot = Xot::new();
+    let text = xot.new_text("a<b");
+    assert_eq!(
+        xot.html5().to_string(text).unwrap(),
+        "<!DOCTYPE html>a&lt;b"
+    );
+}
+
+#[test]
+fn test_html5_text_under_document() {
+    let mut xot = Xot::new();
+    let fragment = xot.parse_fragment("a&lt;b<p>c</p>").unwrap();
+    assert_eq!(
+        xot.html5().to_string(fragment).unwrap(),
+        "<!DOCTYPE html>a&lt;b<p>c</p>"
+    );
+}
+
+struct FailingWriter;
+
+impl io::Write for FailingWriter {
+    fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other("refused"))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn test_write_error() {
+    let mut xot = Xot::new();
+    let doc = xot.parse("<p>a</p>").unwrap();
+    let err = xot.write(doc, &mut FailingWriter).unwrap_err();
+    assert!(matches!(err, Error::Io(_)));
+}
+
+#[test]
+fn test_html5_write_error() {
+    let mut xot = Xot::new();
+    let doc = xot.parse("<p>a</p>").unwrap();
+    let err = xot.html5().write(doc, &mut FailingWriter).unwrap_err();
+    assert!(matches!(err, Error::Io(_)));
 }

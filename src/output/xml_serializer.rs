@@ -73,9 +73,9 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
     ) -> Result<(), Error> {
         let data = self.render_output(node, &output)?;
         if data.space {
-            w.write_all(b" ").unwrap();
+            w.write_all(b" ")?;
         }
-        w.write_all(data.text.as_bytes()).unwrap();
+        w.write_all(data.text.as_bytes())?;
         Ok(())
     }
 
@@ -163,10 +163,14 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
                 }
             }
             Text(text) => {
-                // a text node can be a child of an element or document
-                let parent = self.xot.parent(node).unwrap();
+                // a text node can be a child of an element or document, or it
+                // can have no parent at all
+                let parent_element = self
+                    .xot
+                    .parent(node)
+                    .and_then(|parent| self.xot.element(parent));
 
-                let is_cdata_element = if let Some(element) = self.xot.element(parent) {
+                let is_cdata_element = if let Some(element) = parent_element {
                     self.parameters
                         .cdata_section_elements
                         .contains(&element.name())

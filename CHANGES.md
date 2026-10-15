@@ -53,6 +53,15 @@
   `UnsupportedEncoding` and `EncodingConflict` are byte offsets in the bytes
   given to `parse_bytes`, byte order mark included.
 
+- Serializing a text node without a parent, such as one made with
+  `Xot::new_text`, panicked: with `Xot::to_string` and the other XML
+  serialization functions, with `Xot::tokens` and `Xot::pretty_tokens`, and
+  with the HTML 5 serializer. The HTML 5 serializer also panicked on a text
+  node directly under a document node, as `Xot::parse_fragment` can produce.
+
+- A writer that fails during serialization now gives `Error::Io` instead of a
+  panic.
+
 ## [0.31.2] - 2025-04-09
 
 ### Bugs fixed

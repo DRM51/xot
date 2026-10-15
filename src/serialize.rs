@@ -76,7 +76,7 @@ impl<'a> Html5<'a> {
         w: &mut impl Write,
         normalizer: N,
     ) -> Result<(), Error> {
-        w.write_all(b"<!DOCTYPE html>").unwrap();
+        w.write_all(b"<!DOCTYPE html>")?;
         let outputs = gen_outputs(self.xot, node);
         let mut serializer = Html5Serializer::new(
             self.xot,
