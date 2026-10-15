@@ -935,3 +935,81 @@ fn test_parse_namespace_declaration_with_invalid_entity() {
     let err = xot.parse(r#"<a xmlns="urn:&amp"/>"#).unwrap_err();
     assert!(matches!(err, ParseError::UnclosedEntity(_, 14)));
 }
+
+// Only `xmlns` and `xmlns:NCName` declare namespaces (Namespaces in XML 1.0,
+// section 3); `p:xmlns` is an attribute with the local name `xmlns` in the
+// namespace bound to `p`
+
+#[test]
+fn test_parse_prefixed_xmlns_is_attribute() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<a xmlns:p="urn:p" p:xmlns="urn:v"><b/></a>"#)
+        .unwrap();
+    let a = xot.document_element(doc).unwrap();
+    let b = xot.first_child(a).unwrap();
+    // there is no default namespace, so the elements are in no namespace
+    assert_eq!(xot.name_ns_str(xot.element(a).unwrap().name()), ("a", ""));
+    assert_eq!(xot.name_ns_str(xot.element(b).unwrap().name()), ("b", ""));
+    // `p` is the only prefix declared
+    let p = xot.prefix("p").unwrap();
+    let urn_p = xot.namespace("urn:p").unwrap();
+    let declarations: Vec<_> = xot.namespaces(a).iter().map(|(p, n)| (p, *n)).collect();
+    assert_eq!(declarations, vec![(p, urn_p)]);
+    // `p:xmlns` is the only attribute
+    let xmlns = xot.name_ns("xmlns", urn_p).unwrap();
+    let attributes: Vec<_> = xot
+        .attributes(a)
+        .iter()
+        .map(|(name, value)| (name, value.clone()))
+        .collect();
+    assert_eq!(attributes, vec![(xmlns, "urn:v".to_string())]);
+}
+
+#[test]
+fn test_parse_prefixed_xmlns_with_default_namespace() {
+    // `p:xmlns` does not take the place of the default namespace declaration
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<a xmlns="urn:d" xmlns:p="urn:p" p:xmlns="urn:v"/>"#)
+        .unwrap();
+    let a = xot.document_element(doc).unwrap();
+    assert_eq!(
+        xot.name_ns_str(xot.element(a).unwrap().name()),
+        ("a", "urn:d")
+    );
+    let urn_p = xot.namespace("urn:p").unwrap();
+    let xmlns = xot.name_ns("xmlns", urn_p).unwrap();
+    assert_eq!(xot.get_attribute(a, xmlns), Some("urn:v"));
+}
+
+#[test]
+fn test_parse_xml_xmlns_is_attribute() {
+    // the `xml` prefix is bound without a declaration
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<a xml:xmlns="urn:v"/>"#).unwrap();
+    let a = xot.document_element(doc).unwrap();
+    assert_eq!(xot.name_ns_str(xot.element(a).unwrap().name()), ("a", ""));
+    assert_eq!(xot.namespaces(a).iter().count(), 0);
+    let xmlns = xot.name_ns("xmlns", xot.xml_namespace()).unwrap();
+    assert_eq!(xot.get_attribute(a, xmlns), Some("urn:v"));
+}
+
+#[test]
+fn test_parse_prefixed_xmlns_with_unknown_prefix() {
+    // as for any other attribute, the prefix must be declared
+    let mut xot = Xot::new();
+    let err = xot.parse(r#"<a q:xmlns="urn:v"/>"#).unwrap_err();
+    assert!(matches!(err, ParseError::UnknownPrefix(ref prefix, _) if prefix == "q"));
+    assert_eq!(err.span(), Span::new(3, 4));
+}
+
+#[test]
+fn test_parse_prefixed_xmlns_duplicate() {
+    let mut xot = Xot::new();
+    let err = xot
+        .parse(r#"<a xmlns:p="urn:p" p:xmlns="1" p:xmlns="2"/>"#)
+        .unwrap_err();
+    assert!(matches!(err, ParseError::DuplicateAttribute(ref name, _) if name == "p:xmlns"));
+    assert_eq!(err.span(), Span::new(31, 38));
+}

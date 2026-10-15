@@ -425,3 +425,48 @@ fn test_html5_namespace_declaration_from_api_escaped() {
         r#"<!DOCTYPE html><html><body><island xmlns="urn:a&amp;b&quot;c"></island></body></html>"#
     );
 }
+
+#[test]
+fn test_serialize_prefixed_xmlns_attribute() {
+    // `p:xmlns` is an attribute, written with its prefix, so the output
+    // declares no default namespace and reads back the same
+    let mut xot = Xot::new();
+    let xml = r#"<a xmlns:p="urn:p" p:xmlns="urn:v"><b/></a>"#;
+    let doc = xot.parse(xml).unwrap();
+    assert_eq!(xot.to_string(doc).unwrap(), xml);
+}
+
+#[test]
+fn test_serialize_attribute_named_xmlns_in_namespace() {
+    // made without the parser: an attribute with the local name `xmlns` in a
+    // namespace is written with a prefix like any attribute in a namespace
+    let mut xot = Xot::new();
+    let ns = xot.add_namespace("urn:p");
+    let a_name = xot.add_name("a");
+    let xmlns = xot.add_name_ns("xmlns", ns);
+    let a = xot.new_element(a_name);
+    xot.set_attribute(a, xmlns, "urn:v");
+    let doc = xot.new_document_with_element(a).unwrap();
+    // there is no prefix for the namespace yet
+    assert!(matches!(xot.to_string(doc), Err(Error::MissingPrefix(ref ns)) if ns == "urn:p"));
+    xot.create_missing_prefixes(doc).unwrap();
+    let serialized = xot.to_string(doc).unwrap();
+    assert_eq!(serialized, r#"<a xmlns:n0="urn:p" n0:xmlns="urn:v"/>"#);
+    // which reads back as the same attribute, not as a declaration
+    let doc = xot.parse(&serialized).unwrap();
+    let a = xot.document_element(doc).unwrap();
+    assert_eq!(xot.name_ns_str(xot.element(a).unwrap().name()), ("a", ""));
+    assert_eq!(xot.get_attribute(a, xmlns), Some("urn:v"));
+}
+
+#[test]
+fn test_html5_prefixed_xmlns_attribute() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<html><body xmlns:p="urn:p" p:xmlns="urn:v"></body></html>"#)
+        .unwrap();
+    assert_eq!(
+        xot.html5().to_string(doc).unwrap(),
+        r#"<!DOCTYPE html><html><body xmlns:p="urn:p" p:xmlns="urn:v"></body></html>"#
+    );
+}

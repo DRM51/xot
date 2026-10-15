@@ -690,9 +690,12 @@ impl Xot {
                         value,
                         span: _,
                     } => {
+                        // only `xmlns` and `xmlns:NCName` declare namespaces
+                        // (https://www.w3.org/TR/xml-names/#ns-decl);
+                        // `p:xmlns` is an attribute like any other
                         if prefix.as_str() == "xmlns" {
                             builder.prefix(local.as_str(), value, self)?;
-                        } else if local.as_str() == "xmlns" {
+                        } else if prefix.is_empty() && local.as_str() == "xmlns" {
                             builder.prefix("", value, self)?;
                         } else {
                             builder.attribute(prefix, local, value)?;

@@ -54,6 +54,10 @@
   encodings the bytes 0x80 to 0x9F are now the control characters U+0080 to
   U+009F, and in US-ASCII a byte of 0x80 or more is now an error.
 
+- The parser reads `p:xmlns` as an attribute in the namespace bound to `p`,
+  not as a default namespace declaration (see below), so an undeclared
+  prefix there is now a parse error.
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -126,6 +130,15 @@
   escapes the namespace like an attribute value, including tab, newline and
   carriage return, so that it survives parsing the output again; the HTML 5
   serializer escapes it like the value of an attribute in a namespace.
+
+- The parser took any attribute with the local name `xmlns` for a default
+  namespace declaration, so `p:xmlns="urn:v"` put the element and its
+  descendants in the namespace `urn:v`, even when the prefix `p` was not
+  declared. Namespaces in XML 1.0 (section 3) makes only `xmlns` and
+  `xmlns:` followed by a prefix declare namespaces. `p:xmlns` is now an
+  attribute with the local name `xmlns` in the namespace bound to `p`, which
+  must be declared as for any other attribute. The serializers write such an
+  attribute with its prefix, so the output reads back the same.
 
 - The parser left carriage returns in CDATA sections, comments and
   processing instructions as they were. XML 1.0 (section 2.11) makes a
