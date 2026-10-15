@@ -1,24 +1,84 @@
 use crate::{xotdata::Node, Span};
 
 /// An error that occurred during parsing.
+///
+/// Each error has a span or a position, which [`ParseError::span`] gives.
+/// These are byte offsets in the text that is parsed: the string given to
+/// [`Xot::parse`](crate::Xot::parse) or another function that parses a
+/// string, or for [`Xot::parse_bytes`](crate::Xot::parse_bytes) the text
+/// decoded from the bytes, which leaves out a byte order mark.
+///
+/// The errors that `parse_bytes` reports while it decodes the bytes, before
+/// it parses, are the exception: the spans of
+/// [`ParseError::UnsupportedEncoding`] and [`ParseError::EncodingConflict`]
+/// are byte offsets in the bytes given to `parse_bytes`, byte order mark
+/// included.
 #[derive(Debug, Clone)]
 pub enum ParseError {
     /// The XML is not well-formed - a tag is opened and never closed.
+    ///
+    /// The span is the name in the start tag, in the parsed text.
     UnclosedTag(Span),
     /// The XML is not well-formed - a tag is closed that was never opened.
+    ///
+    /// This holds the prefix and the local name in the end tag, and the span
+    /// of the name in the parsed text.
     InvalidCloseTag(String, String, Span),
     /// The XML is not well-formed - you use `&` to open an entity without
     /// closing it with `;`.
+    ///
+    /// This holds what follows the `&`, and the position of the `&` in the
+    /// parsed text.
     UnclosedEntity(String, usize),
     /// The entity is not known. Only the basic entities are supported
     /// right now, not any user defined ones.
+    ///
+    /// This holds what is between `&` and `;`, and the span of the reference,
+    /// from `&` to `;`, in the parsed text.
     InvalidEntity(String, Span),
     /// You used a namespace prefix that is not declared during parsing.
+    ///
+    /// This holds the prefix and its span in the parsed text.
     UnknownPrefix(String, Span),
     /// You declared an attribute of the same name twice.
+    ///
+    /// This holds the name and the span of its second occurrence in the
+    /// parsed text.
     DuplicateAttribute(String, Span),
     /// Unsupported XML version. Only 1.0 is supported.
+    ///
+    /// This holds the version and its span in the parsed text.
     UnsupportedVersion(String, Span),
+    /// Unsupported encoding, reported by [`Xot::parse_bytes`](crate::Xot::parse_bytes):
+    /// the encoding declaration names an encoding that is not known, or the
+    /// document is in an encoding that cannot be decoded, such as UTF-32.
+    ///
+    /// This holds the name in the encoding declaration and its span, or the
+    /// encoding that the first bytes show, such as `UTF-32LE`, and an empty
+    /// span at 0. Unlike the spans of most errors, this span is a range of
+    /// byte offsets in the bytes given to `parse_bytes`, byte order mark
+    /// included.
+    UnsupportedEncoding(String, Span),
+    /// The encoding declaration does not match the encoding that the first
+    /// bytes show, reported by [`Xot::parse_bytes`](crate::Xot::parse_bytes).
+    /// XML 1.0 (section 4.3.3 and appendix F) makes this a fatal error.
+    ///
+    /// With a byte order mark, the declaration has to name the encoding of
+    /// the byte order mark: UTF-8 for a UTF-8 one, and for a UTF-16 one
+    /// UTF-16, another name of UTF-16 such as UCS-2, or the UTF-16LE or
+    /// UTF-16BE of its byte order. Without a byte order mark, a document
+    /// whose first characters are single bytes cannot declare UTF-16, and a
+    /// document that starts with `<?` in UTF-16 has to declare UTF-16 in that
+    /// byte order.
+    ///
+    /// This holds the name in the encoding declaration, which is empty if
+    /// there is none; what the first bytes show, such as
+    /// `UTF-8 byte order mark`, `UTF-16LE without byte order mark` or
+    /// `ASCII-compatible encoding`; and the span of the name in the
+    /// declaration, or an empty span at 0 if there is none. Unlike the spans
+    /// of most errors, this span is a range of byte offsets in the bytes given
+    /// to `parse_bytes`, byte order mark included.
+    EncodingConflict(String, String, Span),
     /// Unsupported standalone declaration. This error is deprecated since version 0.29, and both
     /// "yes" and "no" values are accepted for the standalone declaration.
     #[deprecated(
@@ -27,21 +87,42 @@ pub enum ParseError {
     )]
     UnsupportedNotStandalone(Span),
     /// XML DTD is not supported.
+    ///
+    /// The span is the part of the DTD that is found, in the parsed text.
     DtdUnsupported(Span),
     /// No top-level element in the document.
+    ///
+    /// The position is the end of the parsed text.
     NoElementAtTopLevel(usize),
     /// Multiple top-level elements in the document.
+    ///
+    /// The span is the name in the start tag of the second element, in the
+    /// parsed text.
     MultipleElementsAtTopLevel(Span),
     /// Text at top level is not allowed in a well-formed document.
+    ///
+    /// The span is the text, in the parsed text.
     TextAtTopLevel(Span),
     /// Duplicate xml:id is not allowed
+    ///
+    /// This holds the value, and the span of the second `xml:id` attribute
+    /// value with it in the parsed text.
     DuplicateId(String, Span),
     /// xmlparser error
+    ///
+    /// This holds the error, and the position in the parsed text where the
+    /// part that xmlparser could not read starts.
     XmlParser(xmlparser::Error, usize),
 }
 
 impl ParseError {
     /// Obtain the span for a ParseError.
+    ///
+    /// For an error that has a position, this is an empty span at that
+    /// position. The span is a range of byte offsets in the parsed text,
+    /// except for the errors that [`Xot::parse_bytes`](crate::Xot::parse_bytes)
+    /// reports while it decodes the bytes, which are byte offsets in its
+    /// input, byte order mark included. See [`ParseError`].
     pub fn span(&self) -> Span {
         match self {
             ParseError::UnclosedTag(span) => *span,
@@ -51,6 +132,8 @@ impl ParseError {
             ParseError::UnknownPrefix(_, span) => *span,
             ParseError::DuplicateAttribute(_, span) => *span,
             ParseError::UnsupportedVersion(_, span) => *span,
+            ParseError::UnsupportedEncoding(_, span) => *span,
+            ParseError::EncodingConflict(_, _, span) => *span,
             #[allow(deprecated)]
             ParseError::UnsupportedNotStandalone(span) => *span,
             ParseError::DtdUnsupported(span) => *span,
@@ -185,6 +268,17 @@ impl std::fmt::Display for ParseError {
             ParseError::UnknownPrefix(s, _) => write!(f, "Unknown prefix: {}", s),
             ParseError::DuplicateAttribute(s, _) => write!(f, "Duplicate attribute: {}", s),
             ParseError::UnsupportedVersion(s, _) => write!(f, "Unsupported version: {}", s),
+            ParseError::UnsupportedEncoding(s, _) => write!(f, "Unsupported encoding: {}", s),
+            ParseError::EncodingConflict(declared, found, _) if declared.is_empty() => write!(
+                f,
+                "Encoding conflict: no encoding declaration, found {}",
+                found
+            ),
+            ParseError::EncodingConflict(declared, found, _) => write!(
+                f,
+                "Encoding conflict: declared {}, found {}",
+                declared, found
+            ),
             #[allow(deprecated)]
             ParseError::UnsupportedNotStandalone(_) => write!(f, "Unsupported standalone"),
             ParseError::DtdUnsupported(_) => write!(f, "DTD is not supported"),

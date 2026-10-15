@@ -1280,12 +1280,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dad7bb64b8ef9c0aa27b6da38b452b0ee9fd82beaf276a87dd796fb55cbae14e"
 
 [[package]]
-name = "xhtmlchardet"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acc471704e8954f426350a7300e92a4da6932b762068ae8e6aa5dcacf141e133"
-
-[[package]]
 name = "xmlparser"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1304,7 +1298,6 @@ dependencies = [
  "proptest",
  "rstest",
  "serde",
- "xhtmlchardet",
  "xmlparser",
 ]
 

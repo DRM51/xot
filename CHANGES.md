@@ -2,6 +2,57 @@
 
 ## [Unreleased] - ReleaseDate
 
+### Breaking changes
+
+- `ParseError` has new variants `UnsupportedEncoding` and
+  `EncodingConflict`. `Xot::parse_bytes` returns `UnsupportedEncoding` when
+  the encoding declaration names an encoding that is not known, or when the
+  document is in an encoding that cannot be decoded (UTF-32 or EBCDIC), and
+  `EncodingConflict` when the encoding declaration does not match the byte
+  order mark or the way the first characters are written (see below).
+
+- `Xot::parse_bytes` rejects a document whose encoding declaration does not
+  match its byte order mark, where the byte order mark used to decide the
+  encoding, and a document in UTF-16 without a byte order mark that does not
+  declare UTF-16 (see below).
+
+- `Xot::parse_bytes` no longer takes the encoding from `charset=` or
+  `encoding=` outside the XML declaration (see below): a document without a
+  byte order mark or an encoding declaration is UTF-8. For example, an
+  HTML-like document with `<meta charset="iso-8859-1"/>` and the byte 0xE9
+  in its text used to give "é", and now gives U+FFFD REPLACEMENT CHARACTER
+  there, as a lone 0xE9 is not valid UTF-8.
+
+### Bugs fixed
+
+- `Xot::parse_bytes` could panic while determining the encoding: on input
+  shorter than 4 bytes, on a UTF-32 byte order mark, on an encoding
+  declaration naming an unknown encoding, and on a document without an
+  encoding declaration where `encoding=` or `charset=` appears in the first
+  512 bytes (in an attribute or in text) followed by something that is not
+  an encoding name. The encoding now follows the rules of the XML
+  specification: a byte order mark decides it; without one the encoding
+  declaration in the XML declaration does; without either the document is
+  UTF-8. Text outside the XML declaration is no longer taken for an encoding
+  declaration, and an encoding declaration with spaces around `=` is now
+  recognized. A name that the WHATWG Encoding Standard has for its
+  replacement encoding, such as `ISO-2022-KR`, which only decodes to U+FFFD
+  REPLACEMENT CHARACTER, is now `ParseError::UnsupportedEncoding` too. The
+  `xhtmlchardet` dependency is no longer used.
+
+- `Xot::parse_bytes` decoded a document whose encoding declaration names
+  another encoding than its byte order mark as the byte order mark says.
+  XML 1.0 (section 4.3.3 and appendix F) makes it a fatal error for a
+  document to be in another encoding than the one it declares, so this is
+  now `ParseError::EncodingConflict`: a UTF-8 byte order mark goes only with
+  a declaration of UTF-8, and a UTF-16 one with UTF-16, another name of
+  UTF-16 such as UCS-2, or the UTF-16LE or UTF-16BE of its byte order.
+  Without a byte order mark, a document whose first characters are single
+  bytes cannot declare UTF-16, and a document that starts with `<?` in
+  UTF-16 has to declare UTF-16 in that byte order. The spans of
+  `UnsupportedEncoding` and `EncodingConflict` are byte offsets in the bytes
+  given to `parse_bytes`, byte order mark included.
+
 ## [0.31.2] - 2025-04-09
 
 ### Bugs fixed

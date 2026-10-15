@@ -814,8 +814,28 @@ impl Xot {
 
     /// Parse bytes containing XML into a node.
     ///
-    /// This attempts to decode the data in the bytes into a Rust string
-    /// (UTF-8) first, then parses this string.
+    /// This decodes the bytes into a Rust string (UTF-8) first, then parses
+    /// this string.
+    ///
+    /// The encoding follows the rules of the XML specification: a byte
+    /// order mark decides it; without one, the encoding declaration in the XML
+    /// declaration does; without either, the document is UTF-8. Byte
+    /// sequences that are not valid in the encoding are replaced by U+FFFD
+    /// REPLACEMENT CHARACTER. If the encoding declaration names an encoding
+    /// that is not known, or the document is in an encoding that cannot be
+    /// decoded, such as UTF-32, you get [`ParseError::UnsupportedEncoding`].
+    ///
+    /// An encoding declaration has to match the byte order mark, and the way
+    /// the first characters are written in bytes, or you get
+    /// [`ParseError::EncodingConflict`]: a UTF-8 byte order mark goes only
+    /// with a declaration of UTF-8, and a UTF-16 one with UTF-16, or another
+    /// name of UTF-16 such as UCS-2, or the UTF-16LE or UTF-16BE of its byte
+    /// order; a document in UTF-16 without a byte order mark has to declare
+    /// it.
+    ///
+    /// The spans of these errors are byte offsets in `bytes`, byte order mark
+    /// included. The spans of the errors in the decoded text are byte offsets
+    /// in that text.
     ///
     /// If you already have a Rust string, use [`Xot::parse`].
     ///
@@ -843,7 +863,7 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn parse_bytes(&mut self, bytes: &[u8]) -> Result<Node, ParseError> {
-        let xml = decode(bytes, None);
+        let xml = decode(bytes)?;
         self.parse(&xml)
     }
 }

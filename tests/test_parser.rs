@@ -477,3 +477,74 @@ fn test_parse_fragment_with_span_info() {
         &Span::new(4, 5)
     );
 }
+
+#[test]
+fn test_parse_bytes_too_short_for_declaration() {
+    // too short for a byte order mark or an XML declaration
+    let mut xot = Xot::new();
+    let err = xot.parse_bytes(b"").unwrap_err();
+    assert!(matches!(err, ParseError::NoElementAtTopLevel(_)));
+    let err = xot.parse_bytes(b"<a>").unwrap_err();
+    assert!(matches!(err, ParseError::UnclosedTag(_)));
+}
+
+#[test]
+fn test_parse_bytes_encoding_attribute_without_declaration() {
+    // without a byte order mark or an XML declaration the document is UTF-8,
+    // whatever looks like an encoding elsewhere
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse_bytes("<doc encoding=\"x-unknown\">\u{e9}</doc>".as_bytes())
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
+    let doc = xot.parse_bytes(b"<doc>charset=none</doc>").unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("charset=none"));
+}
+
+#[test]
+fn test_parse_bytes_declaration_with_spaces() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse_bytes(b"<?xml version=\"1.0\" encoding = \"ISO-8859-1\"?><p>\xe9</p>")
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
+}
+
+#[test]
+fn test_parse_bytes_utf16() {
+    let xml = "\u{FEFF}<?xml version=\"1.0\" encoding=\"UTF-16\"?><p>\u{e9}</p>";
+    let data: Vec<u8> = xml.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+    let mut xot = Xot::new();
+    let doc = xot.parse_bytes(&data).unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
+}
+
+#[test]
+fn test_parse_bytes_bom_with_matching_declaration() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse_bytes("\u{FEFF}<?xml version=\"1.0\" encoding=\"UTF-8\"?><p>\u{e9}</p>".as_bytes())
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
+    let xml = "\u{FEFF}<?xml version=\"1.0\" encoding=\"UTF-16LE\"?><p>\u{e9}</p>";
+    let data: Vec<u8> = xml.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let doc = xot.parse_bytes(&data).unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
+}
+
+#[test]
+fn test_parse_bytes_utf16_without_bom() {
+    // the declaration and the way `<?` is written show the byte order
+    let xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><p>\u{e9}</p>";
+    let data: Vec<u8> = xml.encode_utf16().flat_map(|u| u.to_be_bytes()).collect();
+    let mut xot = Xot::new();
+    let doc = xot.parse_bytes(&data).unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
+}
