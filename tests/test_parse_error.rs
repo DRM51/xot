@@ -41,11 +41,14 @@ fn test_unsupported_version() {
 #[test]
 fn test_parse_invalid_xml_declaration() {
     let mut xot = Xot::new();
-    let err = xot.parse(r#"<?xml version="1.0" standalone="yes" encoding="UTF-8"?><a/>"#)
+    let err = xot
+        .parse(r#"<?xml version="1.0" standalone="yes" encoding="UTF-8"?><a/>"#)
         .unwrap_err();
     assert!(matches!(err, xot::ParseError::XmlParser { .. }));
     match err {
-        xot::ParseError::XmlParser(e, _) => assert!(matches!(e, xmlparser::Error::InvalidDeclaration { .. })),
+        xot::ParseError::XmlParser(e, _) => {
+            assert!(matches!(e, xmlparser::Error::InvalidDeclaration { .. }))
+        }
         _ => unreachable!(),
     }
 }

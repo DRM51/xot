@@ -354,7 +354,7 @@ impl Xot {
     ///
     /// assert_eq!(attributes.get(a), Some(&"A".to_string()));
     /// ```
-    pub fn attributes(&self, node: Node) -> Attributes {
+    pub fn attributes(&self, node: Node) -> Attributes<'_> {
         Attributes::new(self, node)
     }
 
@@ -384,7 +384,7 @@ impl Xot {
     ///
     /// assert_eq!(namespaces.get(foo_prefix), Some(&foo_ns));
     /// ```
-    pub fn namespaces(&self, node: Node) -> Namespaces {
+    pub fn namespaces(&self, node: Node) -> Namespaces<'_> {
         Namespaces::new(self, node)
     }
 

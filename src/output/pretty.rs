@@ -74,7 +74,7 @@ where
     }
 
     fn in_mixed(&self) -> bool {
-        self.stack.iter().any(|e| *e == StackEntry::Mixed)
+        self.stack.contains(&StackEntry::Mixed)
     }
 
     fn in_space_preserve(&self) -> bool {

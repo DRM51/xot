@@ -258,7 +258,7 @@ impl Xot {
     ///
     /// # Ok::<(), xot::Error>(())
     /// ```
-    pub fn name_ref(&self, name_id: NameId, context: Node) -> Result<xmlname::RefName, Error> {
+    pub fn name_ref(&self, name_id: NameId, context: Node) -> Result<xmlname::RefName<'_>, Error> {
         xmlname::RefName::from_node(self, context, name_id)
     }
 
@@ -472,7 +472,7 @@ impl Xot {
     ///
     /// # Ok::<(), xot::Error>(())
     /// ```
-    pub fn node_name_ref(&self, node: Node) -> Result<Option<xmlname::RefName>, Error> {
+    pub fn node_name_ref(&self, node: Node) -> Result<Option<xmlname::RefName<'_>>, Error> {
         if let Some(name) = self.node_name(node) {
             Ok(Some(self.name_ref(name, node)?))
         } else {

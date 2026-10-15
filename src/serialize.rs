@@ -329,7 +329,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
     ///
     /// If you need to generate multiple HTML 5 serializations, it's slightly
     /// more efficient not to re-create this each time.
-    pub fn html5(&mut self) -> Html5 {
+    pub fn html5(&mut self) -> Html5<'_> {
         Html5::new(self)
     }
 
@@ -348,7 +348,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
     /// using Xot you can guarantee that the XML is well-formed, entities and
     /// namespaces have been expanded, and you have access to Xot names using
     /// familiar Xot APIs.
-    pub fn outputs(&self, node: Node) -> impl Iterator<Item = (Node, Output)> {
+    pub fn outputs(&self, node: Node) -> impl Iterator<Item = (Node, Output<'_>)> {
         gen_outputs(self, node)
     }
 

@@ -20,7 +20,7 @@ pub trait NameStrInfo {
     fn prefix(&self) -> &str;
 
     /// Access the full name as a string
-    fn full_name(&self) -> Cow<str> {
+    fn full_name(&self) -> Cow<'_, str> {
         let prefix = self.prefix();
         if !prefix.is_empty() {
             Cow::Owned(format!("{}:{}", prefix, self.local_name()))

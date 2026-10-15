@@ -502,7 +502,7 @@ impl Xot {
     ///
     /// assert_eq!(xot.to_string(root).unwrap(), r#"<p xmlns:foo="FOO">Example</p>"#);
     /// ```
-    pub fn namespaces_mut(&mut self, node: Node) -> MutableNamespaces {
+    pub fn namespaces_mut(&mut self, node: Node) -> MutableNamespaces<'_> {
         if !self.is_element(node) {
             panic!("Node is not an element, so cannot set namespaces");
         }
@@ -541,7 +541,7 @@ impl Xot {
     ///
     /// assert_eq!(xot.to_string(root).unwrap(), r#"<p a="A">Example</p>"#);
     /// ```
-    pub fn attributes_mut(&mut self, node: Node) -> MutableAttributes {
+    pub fn attributes_mut(&mut self, node: Node) -> MutableAttributes<'_> {
         if !self.is_element(node) {
             panic!("Node is not an element, so cannot set attributes");
         }

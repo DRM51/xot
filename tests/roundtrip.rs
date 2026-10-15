@@ -5,7 +5,8 @@ use xot::Xot;
 type RoundTripEntry = (&'static str, &'static str);
 
 #[rstest]
-fn roundtrip(#[values(    
+fn roundtrip(
+    #[values(
     ("basic", r#"<root><a>1</a><b>2</b></root>"#),
     ("self closing", r#"<root/>"#),
     (
@@ -28,7 +29,7 @@ fn roundtrip(#[values(
       "attribute",
       r#"<root foo="bar"/>"#,
   ),
-  ( 
+  (
       "attribute in namespace",
       r#"<root xmlns:foo="http://example.com" foo:bar="baz"/>"#,
   ),
@@ -68,7 +69,9 @@ fn roundtrip(#[values(
     "prefix stability",
     r#"<root xmlns:foo="http://example.com" xmlns:bar="http://example.com/bar"/>"#,
   )
-)] value: RoundTripEntry) {
+)]
+    value: RoundTripEntry,
+) {
     let (name, xml) = value;
     let mut xot = Xot::new();
     let doc = xot.parse(xml).unwrap();

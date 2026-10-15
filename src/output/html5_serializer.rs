@@ -234,7 +234,7 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                         .fullname_serializer
                         .attribute_prefix(*name_id)?
                         .is_none()
-                        && local_name.to_ascii_lowercase() == value.to_ascii_lowercase()
+                        && local_name.eq_ignore_ascii_case(value)
                     {
                         return Ok(OutputToken {
                             space: true,
