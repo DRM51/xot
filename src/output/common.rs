@@ -19,4 +19,10 @@ pub struct TokenSerializeParameters {
     /// `>` is not escaped, except for the special case of `]]>` outside of CDATA,
     /// which is mandated by the XML specification to always be escaped.
     pub unescaped_gt: bool,
+
+    /// Whether to write a carriage return in text content as is, instead of
+    /// as `&#xD;`. A carriage return in an attribute value is escaped either
+    /// way. See
+    /// [`output::xml::Parameters::unescaped_cr`](crate::output::xml::Parameters::unescaped_cr).
+    pub unescaped_cr: bool,
 }

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::io;
 
-use crate::entity::{serialize_attribute, serialize_cdata, serialize_text};
+use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
 use crate::error::Error;
 use crate::id::NameId;
 use crate::output::Normalizer;
@@ -243,7 +243,7 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                     }
                 }
                 let value = if namespace != self.xot.no_namespace() {
-                    serialize_attribute((*value).into(), &self.normalizer)
+                    serialize_attribute((*value).into(), &self.normalizer, Escapes::MarkupOnly)
                 } else {
                     serialize_attribute_html((*value).into(), &self.normalizer)
                 };
@@ -266,10 +266,12 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                         serialize_text_no_escape((*text).into(), &self.normalizer).to_string()
                     }
                     Some(name) if self.cdata_section_names.contains(&name) => {
-                        serialize_cdata((*text).into(), &self.normalizer).to_string()
+                        serialize_cdata((*text).into(), &self.normalizer, Escapes::MarkupOnly)
+                            .to_string()
                     }
                     Some(name) if !self.html5_elements.is_html_element(self.xot, name) => {
-                        serialize_text((*text).into(), &self.normalizer, false).to_string()
+                        serialize_text((*text).into(), &self.normalizer, false, Escapes::MarkupOnly)
+                            .to_string()
                     }
                     _ => serialize_text_html((*text).into(), &self.normalizer).to_string(),
                 };

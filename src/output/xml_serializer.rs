@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::entity::{serialize_attribute, serialize_cdata, serialize_text};
+use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
 use crate::error::Error;
 use crate::id::NameId;
 use crate::output::Normalizer;
@@ -14,6 +14,7 @@ pub(crate) struct XmlSerializer<'a, N: Normalizer> {
     fullname_serializer: FullnameSerializer<'a>,
     normalizer: N,
     parameters: TokenSerializeParameters,
+    escapes: Escapes,
 }
 
 impl<'a, N: Normalizer> XmlSerializer<'a, N> {
@@ -25,11 +26,15 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
     ) -> Self {
         let extra_declarations = xot.namespaces_in_scope(node).collect();
         let fullname_serializer = FullnameSerializer::new(xot, extra_declarations);
+        let escapes = Escapes::RoundTrip {
+            unescaped_cr: parameters.unescaped_cr,
+        };
         Self {
             xot,
             fullname_serializer,
             normalizer,
             parameters,
+            escapes,
         }
     }
 
@@ -158,7 +163,7 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
                     text: format!(
                         "{}=\"{}\"",
                         fullname,
-                        serialize_attribute((*value).into(), &self.normalizer)
+                        serialize_attribute((*value).into(), &self.normalizer, self.escapes)
                     ),
                 }
             }
@@ -181,7 +186,8 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
                 if is_cdata_element {
                     OutputToken {
                         space: false,
-                        text: serialize_cdata((*text).into(), &self.normalizer).to_string(),
+                        text: serialize_cdata((*text).into(), &self.normalizer, self.escapes)
+                            .to_string(),
                     }
                 } else {
                     OutputToken {
@@ -190,6 +196,7 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
                             (*text).into(),
                             &self.normalizer,
                             self.parameters.unescaped_gt,
+                            self.escapes,
                         )
                         .to_string(),
                     }

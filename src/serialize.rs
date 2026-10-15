@@ -222,6 +222,27 @@ impl Xot {
     /// assert_eq!(xml, "<a>\n  <b/>\n</a>\n");
     /// # Ok::<(), xot::Error>(())
     /// ```
+    ///
+    /// Text and attribute values are escaped so that they survive parsing the
+    /// output again; a carriage return is written as `&#xD;`. You can keep it
+    /// as it is in text:
+    ///
+    /// ```rust
+    /// use xot::{Xot, output};
+    ///
+    /// let mut xot = Xot::new();
+    /// let root = xot.parse("<a b=\"1&#xD;2\">1&#xD;2</a>")?;
+    ///
+    /// let xml = xot.serialize_xml_string(Default::default(), root)?;
+    /// assert_eq!(xml, "<a b=\"1&#xD;2\">1&#xD;2</a>");
+    ///
+    /// let xml = xot.serialize_xml_string(output::xml::Parameters {
+    ///     unescaped_cr: true,
+    ///     ..Default::default()
+    /// }, root)?;
+    /// assert_eq!(xml, "<a b=\"1&#xD;2\">1\r2</a>");
+    /// # Ok::<(), xot::Error>(())
+    /// ```
     pub fn serialize_xml_string(
         &self,
         parameters: output::xml::Parameters,
@@ -311,6 +332,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
             TokenSerializeParameters {
                 cdata_section_elements: parameters.cdata_section_elements,
                 unescaped_gt: parameters.unescaped_gt,
+                unescaped_cr: parameters.unescaped_cr,
             },
             normalizer,
         );

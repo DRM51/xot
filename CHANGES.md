@@ -23,7 +23,34 @@
   in its text used to give "é", and now gives U+FFFD REPLACEMENT CHARACTER
   there, as a lone 0xE9 is not valid UTF-8.
 
+- XML output escapes more characters, so that text and attribute values
+  survive parsing the output again (see below). Output that contains these
+  characters changes.
+
+- `output::xml::Parameters` and `output::TokenSerializeParameters` have a new
+  member, `unescaped_cr`. Code that creates them with a full struct literal,
+  without `..Default::default()`, no longer compiles.
+
+### Features added
+
+- `unescaped_cr` in `output::xml::Parameters` and
+  `output::TokenSerializeParameters` writes a carriage return in text as is,
+  while it is still escaped in attribute values, as some other serializers
+  do. It applies to all the XML serialization functions, those with a
+  normalizer too, and to `Xot::tokens` and `Xot::pretty_tokens`.
+
 ### Bugs fixed
+
+- XML output now escapes characters as the XML output method of
+  Serialization 3.1 (<https://www.w3.org/TR/xslt-xquery-serialization-31/>)
+  requires, so that they survive parsing the output again. Tab, newline and
+  carriage return in attribute values are written as `&#x9;`, `&#xA;` and
+  `&#xD;`; before, parsing turned them into spaces. A carriage return in
+  text is written as `&#xD;`; before, parsing turned it into a newline. NEL
+  (#x85), LINE SEPARATOR (#x2028) and the control characters #x7F to #x9F
+  are written as character references in both. Text in a CDATA section
+  element is split into CDATA sections around these characters. HTML 5
+  output is unchanged.
 
 - `Xot::parse_bytes` could panic while determining the encoding: on input
   shorter than 4 bytes, on a UTF-32 byte order mark, on an encoding

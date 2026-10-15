@@ -1,8 +1,64 @@
 use std::borrow::Cow;
+use std::fmt::Write;
 
 use crate::error::ParseError;
 use crate::output::Normalizer;
 use crate::Span;
+
+/// Which characters other than markup characters are written as character
+/// references in text and attribute values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Escapes {
+    /// None.
+    MarkupOnly,
+    /// Those that would not survive parsing the output again, as the XML
+    /// output method of Serialization 3.1
+    /// (<https://www.w3.org/TR/xslt-xquery-serialization-31/>, section 5)
+    /// requires: in text carriage return, NEL and LINE SEPARATOR, in
+    /// attribute values also tab and newline, and in both the control
+    /// characters #x7F to #x9F.
+    ///
+    /// The control characters #x1 to #x1F other than tab, newline and
+    /// carriage return cannot appear in XML 1.0, not even as character
+    /// references, so they are left as they are.
+    RoundTrip {
+        /// Write a carriage return in text as is.
+        unescaped_cr: bool,
+    },
+}
+
+impl Escapes {
+    fn in_text(self, c: char) -> bool {
+        match self {
+            Escapes::MarkupOnly => false,
+            Escapes::RoundTrip { unescaped_cr } => {
+                (c == '\r' && !unescaped_cr) || is_xml11_line_end_or_control(c)
+            }
+        }
+    }
+
+    fn in_attribute(self, c: char) -> bool {
+        match self {
+            Escapes::MarkupOnly => false,
+            Escapes::RoundTrip { .. } => {
+                matches!(c, '\t' | '\n' | '\r') || is_xml11_line_end_or_control(c)
+            }
+        }
+    }
+}
+
+/// NEL (#x85) and LINE SEPARATOR (#x2028) are line ends to an XML 1.1 parser,
+/// and XML 1.1 requires the control characters #x7F to #x9F to be escaped.
+/// The serialization specification requires escaping them whatever the XML
+/// version, as an XML 1.1 document can include an XML 1.0 entity.
+fn is_xml11_line_end_or_control(c: char) -> bool {
+    matches!(c, '\u{7F}'..='\u{9F}' | '\u{2028}')
+}
+
+fn push_char_ref(result: &mut String, c: char) {
+    // writing to a string cannot fail
+    let _ = write!(result, "&#x{:X};", u32::from(c));
+}
 
 pub(crate) fn parse_text(content: Cow<str>, base_position: usize) -> Result<Cow<str>, ParseError> {
     parse_content(content, false, base_position)
@@ -117,6 +173,7 @@ pub(crate) fn serialize_text<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
     unescaped_gt: bool,
+    escapes: Escapes,
 ) -> Cow<'a, str> {
     let mut result = String::new();
     let mut change = false;
@@ -152,6 +209,10 @@ pub(crate) fn serialize_text<'a, N: Normalizer>(
                 }
                 result.push('>');
             }
+            c if escapes.in_text(c) => {
+                change = true;
+                push_char_ref(&mut result, c);
+            }
             _ => result.push(c),
         }
     }
@@ -166,58 +227,50 @@ pub(crate) fn serialize_text<'a, N: Normalizer>(
 pub(crate) fn serialize_cdata<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
+    escapes: Escapes,
 ) -> Cow<'a, str> {
     let mut result = String::new();
-    result.push_str("<![CDATA[");
-    // we write the content, watching for any possible sequence of "]]>"
-    let mut closing_square_brackets_seen = 0;
+    let mut in_section = false;
+    // the number of `]` that directly precede the current character in the
+    // open CDATA section
+    let mut square_brackets = 0;
     let normalized_content = normalizer.normalize(content);
     for c in normalized_content.chars() {
-        match c {
-            ']' => {
-                if closing_square_brackets_seen < 2 {
-                    closing_square_brackets_seen += 1;
-                } else {
-                    // if we're three, so write it and then start counting again
-                    result.push(c);
-                    // we are still at the critical junction
-                    closing_square_brackets_seen = 2;
-                }
+        if escapes.in_text(c) {
+            // a CDATA section cannot contain a character reference, so the
+            // section ends before it and a new one starts after it if needed
+            if in_section {
+                result.push_str("]]>");
+                in_section = false;
             }
-            '>' => {
-                if closing_square_brackets_seen == 2 {
-                    // we are the sequence
-                    result.push_str("]]]]><![CDATA[>");
-                } else {
-                    // push any closing square brackets we've seen
-                    for _ in 0..closing_square_brackets_seen {
-                        result.push(']');
-                    }
-                    result.push(c);
-                }
-                closing_square_brackets_seen = 0;
-            }
-            _ => {
-                // push any closing square brackets we've seen
-                for _ in 0..closing_square_brackets_seen {
-                    result.push(']');
-                }
-                closing_square_brackets_seen = 0;
-                result.push(c)
-            }
+            push_char_ref(&mut result, c);
+            square_brackets = 0;
+            continue;
         }
+        if !in_section {
+            result.push_str("<![CDATA[");
+            in_section = true;
+        } else if c == '>' && square_brackets >= 2 {
+            // a CDATA section cannot contain `]]>`, so we end it between `]]`
+            // and `>` and start a new one
+            result.push_str("]]><![CDATA[");
+        }
+        result.push(c);
+        square_brackets = if c == ']' { square_brackets + 1 } else { 0 };
     }
-    // push any closing square brackets we've seen
-    for _ in 0..closing_square_brackets_seen {
-        result.push(']');
+    if in_section {
+        result.push_str("]]>");
+    } else if result.is_empty() {
+        // empty text is an empty CDATA section
+        result.push_str("<![CDATA[]]>");
     }
-    result.push_str("]]>");
     result.into()
 }
 
 pub(crate) fn serialize_attribute<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
+    escapes: Escapes,
 ) -> Cow<'a, str> {
     let mut result = String::new();
     let mut change = false;
@@ -240,6 +293,10 @@ pub(crate) fn serialize_attribute<'a, N: Normalizer>(
                 change = true;
                 result.push_str("&quot;")
             }
+            c if escapes.in_attribute(c) => {
+                change = true;
+                push_char_ref(&mut result, c);
+            }
             _ => result.push(c),
         }
     }
@@ -257,6 +314,10 @@ mod tests {
     use crate::output::NoopNormalizer;
 
     use super::*;
+
+    const XML: Escapes = Escapes::RoundTrip {
+        unescaped_cr: false,
+    };
 
     #[test]
     fn test_parse() {
@@ -354,7 +415,7 @@ mod tests {
     fn test_serialize_text() {
         let text = "A & B";
         assert_eq!(
-            serialize_text(text.into(), &NoopNormalizer, false),
+            serialize_text(text.into(), &NoopNormalizer, false, XML),
             "A &amp; B"
         );
     }
@@ -363,7 +424,7 @@ mod tests {
     fn test_serialize_text_multiple() {
         let text = "&<'\">";
         assert_eq!(
-            serialize_text(text.into(), &NoopNormalizer, false),
+            serialize_text(text.into(), &NoopNormalizer, false, XML),
             "&amp;&lt;'\"&gt;"
         );
     }
@@ -371,20 +432,23 @@ mod tests {
     #[test]
     fn test_serialize_text_gt_escaped() {
         let text = ">";
-        assert_eq!(serialize_text(text.into(), &NoopNormalizer, false), "&gt;");
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, false, XML),
+            "&gt;"
+        );
     }
 
     #[test]
     fn test_serialize_text_gt_unescaped() {
         let text = ">";
-        assert_eq!(serialize_text(text.into(), &NoopNormalizer, true), ">");
+        assert_eq!(serialize_text(text.into(), &NoopNormalizer, true, XML), ">");
     }
 
     #[test]
     fn test_serialize_text_like_cdata_section_close_delimiter() {
         let text = "]]>";
         assert_eq!(
-            serialize_text(text.into(), &NoopNormalizer, false),
+            serialize_text(text.into(), &NoopNormalizer, false, XML),
             "]]&gt;"
         );
     }
@@ -393,14 +457,17 @@ mod tests {
     fn test_serialize_text_like_cdata_section_close_delimiter_gt_unescaped() {
         let text = "]]>";
         // this needs to happen even if the gt is asked to be unescaped
-        assert_eq!(serialize_text(text.into(), &NoopNormalizer, true), "]]&gt;");
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, true, XML),
+            "]]&gt;"
+        );
     }
 
     #[test]
     fn test_serialize_text_like_cdata_section_close_delimiter_split() {
         let text = "]]extra>";
         assert_eq!(
-            serialize_text(text.into(), &NoopNormalizer, true),
+            serialize_text(text.into(), &NoopNormalizer, true, XML),
             "]]extra>"
         );
     }
@@ -408,7 +475,7 @@ mod tests {
     fn test_serialize_text_like_cdata_section_close_delimiter_prefix() {
         let text = "extra]]>";
         assert_eq!(
-            serialize_text(text.into(), &NoopNormalizer, true),
+            serialize_text(text.into(), &NoopNormalizer, true, XML),
             "extra]]&gt;"
         );
     }
@@ -417,7 +484,7 @@ mod tests {
     fn test_serialize_text_like_cdata_section_close_delimiter_postfix() {
         let text = "]]>extra";
         assert_eq!(
-            serialize_text(text.into(), &NoopNormalizer, true),
+            serialize_text(text.into(), &NoopNormalizer, true, XML),
             "]]&gt;extra"
         );
     }
@@ -425,7 +492,7 @@ mod tests {
     #[test]
     fn test_serialize_text_no_entities() {
         let text = "hello";
-        let result = serialize_text(text.into(), &NoopNormalizer, false);
+        let result = serialize_text(text.into(), &NoopNormalizer, false, XML);
         // this is the same slice
         assert!(std::ptr::eq(text, result.as_ref()));
     }
@@ -434,7 +501,7 @@ mod tests {
     fn test_serialize_attribute() {
         let text = "A & B";
         assert_eq!(
-            serialize_attribute(text.into(), &NoopNormalizer),
+            serialize_attribute(text.into(), &NoopNormalizer, XML),
             "A &amp; B"
         );
     }
@@ -443,7 +510,7 @@ mod tests {
     fn test_serialize_attribute_multiple_single() {
         let text = "&<'";
         assert_eq!(
-            serialize_attribute(text.into(), &NoopNormalizer),
+            serialize_attribute(text.into(), &NoopNormalizer, XML),
             "&amp;&lt;&apos;"
         );
     }
@@ -452,7 +519,7 @@ mod tests {
     fn test_serialize_attribute_multiple_double() {
         let text = "&<\"";
         assert_eq!(
-            serialize_attribute(text.into(), &NoopNormalizer),
+            serialize_attribute(text.into(), &NoopNormalizer, XML),
             "&amp;&lt;&quot;"
         );
     }
@@ -460,7 +527,7 @@ mod tests {
     #[test]
     fn test_serialize_attribute_no_entities() {
         let text = "hello";
-        let result = serialize_attribute(text.into(), &NoopNormalizer);
+        let result = serialize_attribute(text.into(), &NoopNormalizer, XML);
         // this is the same slice
         assert!(std::ptr::eq(text, result.as_ref()));
     }
@@ -499,7 +566,7 @@ mod tests {
     fn test_serialize_cdata_simple() {
         let text = "hello";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[hello]]>"
         );
     }
@@ -508,7 +575,7 @@ mod tests {
     fn test_serialize_cdata_end_sequence() {
         let text = "hello]]>world";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[hello]]]]><![CDATA[>world]]>"
         );
     }
@@ -517,7 +584,7 @@ mod tests {
     fn test_serialize_cdata_two_square_brackets() {
         let text = "hello]]world";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[hello]]world]]>"
         );
     }
@@ -527,7 +594,7 @@ mod tests {
     fn test_serialize_cdata_two_square_brackets_end() {
         let text = "hello]]";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[hello]]]]>"
         );
     }
@@ -537,7 +604,7 @@ mod tests {
     fn test_serialize_cdata_greater_than() {
         let text = ">";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[>]]>"
         );
     }
@@ -547,7 +614,7 @@ mod tests {
     fn test_serialize_cdata_special_sequence() {
         let text = "]]>";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[]]]]><![CDATA[>]]>"
         );
     }
@@ -557,7 +624,7 @@ mod tests {
     fn test_serialize_cdata_three_square_brackets() {
         let text = "hello]]]world";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[hello]]]world]]>"
         );
     }
@@ -567,8 +634,158 @@ mod tests {
     fn test_serialize_cdata_three_square_brackets_end_sequence() {
         let text = "hello]]]>world";
         assert_eq!(
-            serialize_cdata(text.into(), &NoopNormalizer),
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
             "<![CDATA[hello]]]]]><![CDATA[>world]]>"
+        );
+    }
+
+    const XML_UNESCAPED_CR: Escapes = Escapes::RoundTrip { unescaped_cr: true };
+
+    #[test]
+    fn test_serialize_text_cr() {
+        let text = "A\rB\r\nC";
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, false, XML),
+            "A&#xD;B&#xD;\nC"
+        );
+    }
+
+    #[test]
+    fn test_serialize_text_unescaped_cr() {
+        let text = "A\rB";
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, false, XML_UNESCAPED_CR),
+            "A\rB"
+        );
+    }
+
+    #[test]
+    fn test_serialize_text_tab_newline_unescaped() {
+        let text = "A\tB\nC";
+        let result = serialize_text(text.into(), &NoopNormalizer, false, XML);
+        assert!(std::ptr::eq(text, result.as_ref()));
+    }
+
+    #[test]
+    fn test_serialize_text_line_ends_and_control_characters() {
+        // NEL, LINE SEPARATOR and the control characters #x7F to #x9F, but
+        // not the characters around that range
+        let text = "\u{7E}\u{7F}\u{85}\u{9F}\u{A0}\u{2028}\u{2029}";
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, false, XML),
+            "\u{7E}&#x7F;&#x85;&#x9F;\u{A0}&#x2028;\u{2029}"
+        );
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, false, XML_UNESCAPED_CR),
+            "\u{7E}&#x7F;&#x85;&#x9F;\u{A0}&#x2028;\u{2029}"
+        );
+    }
+
+    #[test]
+    fn test_serialize_text_markup_only() {
+        let text = "A\r\u{85}\u{2028}&";
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, false, Escapes::MarkupOnly),
+            "A\r\u{85}\u{2028}&amp;"
+        );
+    }
+
+    #[test]
+    fn test_serialize_text_gt_unescaped_with_char_ref() {
+        let text = "]]\u{85}>";
+        assert_eq!(
+            serialize_text(text.into(), &NoopNormalizer, true, XML),
+            "]]&#x85;>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_attribute_whitespace() {
+        let text = "A\tB\nC\rD\r\nE F";
+        assert_eq!(
+            serialize_attribute(text.into(), &NoopNormalizer, XML),
+            "A&#x9;B&#xA;C&#xD;D&#xD;&#xA;E F"
+        );
+        // a carriage return is escaped in attribute values even when it is
+        // not in text
+        assert_eq!(
+            serialize_attribute(text.into(), &NoopNormalizer, XML_UNESCAPED_CR),
+            "A&#x9;B&#xA;C&#xD;D&#xD;&#xA;E F"
+        );
+    }
+
+    #[test]
+    fn test_serialize_attribute_line_ends_and_control_characters() {
+        let text = "\u{7E}\u{7F}\u{85}\u{9F}\u{A0}\u{2028}";
+        assert_eq!(
+            serialize_attribute(text.into(), &NoopNormalizer, XML),
+            "\u{7E}&#x7F;&#x85;&#x9F;\u{A0}&#x2028;"
+        );
+    }
+
+    #[test]
+    fn test_serialize_attribute_markup_only() {
+        let text = "A\tB\nC\rD";
+        let result = serialize_attribute(text.into(), &NoopNormalizer, Escapes::MarkupOnly);
+        assert!(std::ptr::eq(text, result.as_ref()));
+    }
+
+    #[test]
+    fn test_serialize_cdata_empty() {
+        assert_eq!(
+            serialize_cdata("".into(), &NoopNormalizer, XML),
+            "<![CDATA[]]>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_cdata_cr() {
+        let text = "hello\rworld";
+        assert_eq!(
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
+            "<![CDATA[hello]]>&#xD;<![CDATA[world]]>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_cdata_char_refs_at_start_and_end() {
+        let text = "\rhello\u{2028}";
+        assert_eq!(
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
+            "&#xD;<![CDATA[hello]]>&#x2028;"
+        );
+        assert_eq!(
+            serialize_cdata("\r\n".into(), &NoopNormalizer, XML),
+            "&#xD;<![CDATA[\n]]>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_cdata_unescaped_cr() {
+        let text = "hello\rworld\u{85}";
+        assert_eq!(
+            serialize_cdata(text.into(), &NoopNormalizer, XML_UNESCAPED_CR),
+            "<![CDATA[hello\rworld]]>&#x85;"
+        );
+    }
+
+    #[test]
+    fn test_serialize_cdata_char_ref_between_square_brackets_and_gt() {
+        // the char reference ends the section, so `]]` and `>` are no longer
+        // adjacent
+        let text = "]]\r>";
+        assert_eq!(
+            serialize_cdata(text.into(), &NoopNormalizer, XML),
+            "<![CDATA[]]]]>&#xD;<![CDATA[>]]>"
+        );
+    }
+
+    #[test]
+    fn test_serialize_cdata_markup_only() {
+        let text = "hello\rworld";
+        assert_eq!(
+            serialize_cdata(text.into(), &NoopNormalizer, Escapes::MarkupOnly),
+            "<![CDATA[hello\rworld]]>"
         );
     }
 }

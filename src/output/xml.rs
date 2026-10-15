@@ -5,6 +5,22 @@
 //! See [`Xot::serialize_xml_string`],
 //! [`Xot::serialize_xml_string_with_normalizer`], [`Xot::serialize_xml_write`],
 //! and [`Xot::serialize_xml_write_with_normalizer`].
+//!
+//! Text and attribute values are escaped as the XML output method of
+//! [Serialization 3.1](https://www.w3.org/TR/xslt-xquery-serialization-31/#xml-output)
+//! requires, so that they survive parsing the output again. Besides markup
+//! characters such as `&` and `<`, these characters are written as character
+//! references:
+//!
+//! - carriage return (#xD), NEL (#x85), LINE SEPARATOR (#x2028) and the
+//!   control characters #x7F to #x9F, in text and attribute values. A text
+//!   node in a CDATA section element is split into CDATA sections around
+//!   them.
+//!
+//! - tab (#x9) and newline (#xA) in attribute values.
+//!
+//! With [`Parameters::unescaped_cr`] a carriage return in text is written as
+//! it is.
 
 // This follows the rules
 // <https://www.w3.org/TR/xslt-xquery-serialization/#xml-output> but this API is
@@ -58,6 +74,14 @@ pub struct Parameters {
     /// `>` is not escaped, except for the special case of `]]>` outside of CDATA,
     /// which is mandated by the XML specification to always be escaped.
     pub unescaped_gt: bool,
+    /// Whether to write a carriage return in text content as is. By default
+    /// this is false, which means that a carriage return in text is written
+    /// as `&#xD;`, also in a CDATA section element, so that it survives
+    /// parsing the output again. If you set this to true, it is written as
+    /// is, and parsing the output again turns it into a newline; some other
+    /// serializers write text this way. A carriage return in an attribute
+    /// value is escaped either way.
+    pub unescaped_cr: bool,
     // TODO: character maps
 }
 
