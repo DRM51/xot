@@ -287,6 +287,15 @@ impl DocumentBuilder {
         name: StrSpan,
         xot: &mut Xot,
     ) -> Result<NodeId, ParseError> {
+        // an end tag without a start tag, which the tokenizer reports in a
+        // document, but takes in a fragment
+        if self.is_current_node_document(xot) {
+            return Err(ParseError::InvalidCloseTag(
+                prefix.to_string(),
+                name.to_string(),
+                Span::from_prefix_name(prefix, name),
+            ));
+        }
         let name_id = self
             .name_id_builder
             .element_name_id(&prefix, &name, prefix.into(), xot)?;

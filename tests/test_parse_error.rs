@@ -674,3 +674,27 @@ fn test_xmlparser_error_position_after_declaration_with_newline() {
         "invalid attribute at 4:9 cause expected quote mark not '/' at 4:12"
     );
 }
+
+#[test]
+fn test_fragment_end_tag_without_start_tag() {
+    // an end tag that closes nothing; the prefix does not have to be
+    // declared for this
+    let mut xot = Xot::new();
+    for (xml, prefix, name, span) in [
+        ("</a>", "", "a", 2..3),
+        ("<a></a></b>", "", "b", 9..10),
+        ("text</p:a>", "p", "a", 6..9),
+    ] {
+        let err = xot.parse_fragment(xml).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                xot::ParseError::InvalidCloseTag(ref p, ref n, _) if p == prefix && n == name
+            ),
+            "{}: {:?}",
+            xml,
+            err
+        );
+        assert_eq!(err.span(), span.into(), "{}", xml);
+    }
+}

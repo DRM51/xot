@@ -294,6 +294,11 @@
   out, so the output had an undeclared prefix. It now starts from the
   declarations in scope on the parent of the node.
 
+- `Xot::parse_fragment` panicked with "Cannot close document node" on an end
+  tag without a start tag, such as `</a>`. This is now
+  `ParseError::InvalidCloseTag` with the span of the name in the end tag,
+  the error for an end tag that does not match its start tag.
+
 ## [0.31.2] - 2025-04-09
 
 ### Bugs fixed
