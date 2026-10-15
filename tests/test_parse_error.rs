@@ -379,6 +379,60 @@ fn test_parse_bytes_invalid_byte_sequence_declared_encoding() {
 }
 
 #[test]
+fn test_parse_bytes_invalid_byte_sequence_us_ascii() {
+    // US-ASCII has no characters for the bytes 0x80 to 0xFF
+    let xml = b"<?xml version=\"1.0\" encoding=\"US-ASCII\"?><doc>caf\xe9</doc>";
+    let mut xot = Xot::new();
+    let err = xot.parse_bytes(xml).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "US-ASCII"));
+    assert_eq!(err.span(), (49..50).into());
+    assert_eq!(
+        err.to_string(),
+        "Invalid byte sequence for encoding US-ASCII at byte 49"
+    );
+}
+
+#[test]
+fn test_parse_bytes_invalid_byte_sequence_us_ascii_names() {
+    // whichever name of US-ASCII the document uses
+    let mut xot = Xot::new();
+    for name in [
+        "US-ASCII",
+        "us-ascii",
+        "ASCII",
+        "ANSI_X3.4-1968",
+        "ANSI_X3.4-1986",
+        "ISO646-US",
+        "us",
+        "IBM367",
+        "csASCII",
+    ] {
+        let mut xml = format!("<?xml version=\"1.0\" encoding=\"{}\"?><doc>", name).into_bytes();
+        let at = xml.len();
+        xml.extend(b"\x80</doc>");
+        let err = xot.parse_bytes(&xml).unwrap_err();
+        assert!(
+            matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "US-ASCII"),
+            "{}: {:?}",
+            name,
+            err
+        );
+        assert_eq!(err.span(), (at..at + 1).into(), "{}", name);
+    }
+}
+
+#[test]
+fn test_parse_bytes_invalid_byte_sequence_tis_620() {
+    // TIS-620, also named ISO-8859-11, has no character for the bytes 0xDB to
+    // 0xDE and 0xFC to 0xFF
+    let xml = b"<?xml version=\"1.0\" encoding=\"ISO-8859-11\"?><doc>ok\xfc</doc>";
+    let mut xot = Xot::new();
+    let err = xot.parse_bytes(xml).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "TIS-620"));
+    assert_eq!(err.span(), (51..52).into());
+}
+
+#[test]
 fn test_parse_bytes_invalid_byte_sequence_utf16() {
     // a high surrogate without a low surrogate; the offsets are in bytes and
     // count the byte order mark

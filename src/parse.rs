@@ -853,6 +853,17 @@ impl Xot {
     /// included. The spans of the errors in the decoded text are byte offsets
     /// in that text.
     ///
+    /// Encoding names are those of the WHATWG Encoding Standard, ignoring
+    /// case, except for these names, which IANA registers for US-ASCII,
+    /// ISO-8859-1, ISO-8859-9 and TIS-620 (ISO-8859-11): US-ASCII,
+    /// ANSI_X3.4-1968, ANSI_X3.4-1986, ISO646-US, us, IBM367, csASCII and
+    /// ASCII; ISO-8859-1, ISO_8859-1, latin1, IBM819 and csISOLatin1;
+    /// ISO-8859-9, ISO_8859-9, latin5 and csISOLatin5; TIS-620, csTIS620 and
+    /// ISO-8859-11. They stand for these encodings, not for windows-1252,
+    /// windows-1254 and windows-874: in US-ASCII a byte of 0x80 or more is not
+    /// valid, and in the others the bytes 0x80 to 0x9F are the control
+    /// characters U+0080 to U+009F.
+    ///
     /// If you already have a Rust string, use [`Xot::parse`].
     ///
     /// The returned node is the document node of the parsed XML document.

@@ -683,6 +683,182 @@ fn test_parse_bytes_utf16_without_bom() {
     assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
 }
 
+/// An XML document with an encoding declaration for `encoding`, and `bytes`
+/// as the content of its document element.
+fn declared_encoding_document(encoding: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut xml = format!("<?xml version=\"1.0\" encoding=\"{}\"?><p>", encoding).into_bytes();
+    xml.extend(bytes);
+    xml.extend(b"</p>");
+    xml
+}
+
+#[test]
+fn test_parse_bytes_iso_8859_1() {
+    // each byte is the character with the same number; the bytes 0x80 to
+    // 0x9F are the C1 control characters, not the characters that
+    // windows-1252 has for them
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse_bytes(
+            b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><p a=\"\x80\x9f\">\x80\x9f\xa0\xe9\xff</p>",
+        )
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(
+        xot.text_content_str(doc_el),
+        Some("\u{80}\u{9f}\u{a0}\u{e9}\u{ff}")
+    );
+    let a = xot.add_name("a");
+    assert_eq!(xot.get_attribute(doc_el, a), Some("\u{80}\u{9f}"));
+}
+
+#[test]
+fn test_parse_bytes_iso_8859_1_names() {
+    // names IANA registers for ISO-8859-1, in any case; ISO_8859-1:1987 is
+    // one too, but `:` cannot be in an encoding declaration
+    let mut xot = Xot::new();
+    for name in [
+        "ISO-8859-1",
+        "iso-8859-1",
+        "ISO_8859-1",
+        "latin1",
+        "IBM819",
+        "csISOLatin1",
+    ] {
+        let doc = xot
+            .parse_bytes(&declared_encoding_document(name, b"\x80"))
+            .unwrap();
+        let doc_el = xot.document_element(doc).unwrap();
+        assert_eq!(xot.text_content_str(doc_el), Some("\u{80}"), "{}", name);
+    }
+    // an encoding declaration with `:` in the name (production [81] EncName
+    // does not allow it) is not well-formed
+    for name in ["ISO_8859-1:1987", "ISO_646.irv:1991"] {
+        assert!(
+            xot.parse_bytes(&declared_encoding_document(name, b"\x80"))
+                .is_err(),
+            "{}",
+            name
+        );
+    }
+}
+
+/// The text of the document element of a document with an encoding
+/// declaration for `encoding`, which has `bytes` as its content.
+fn declared_encoding_text(xot: &mut Xot, encoding: &str, bytes: &[u8]) -> String {
+    let doc = xot
+        .parse_bytes(&declared_encoding_document(encoding, bytes))
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    xot.text_content_str(doc_el).unwrap().to_string()
+}
+
+#[test]
+fn test_parse_bytes_iso_8859_0x80_to_0x9f() {
+    // in ISO 8859 the bytes 0x80 to 0x9F are the control characters U+0080
+    // to U+009F, not the characters such as `€` that windows-1252,
+    // windows-1254 and windows-874 have for most of them
+    let mut xot = Xot::new();
+    assert_eq!(
+        declared_encoding_text(&mut xot, "ISO-8859-9", b"\x80"),
+        "\u{80}"
+    );
+    assert_eq!(
+        declared_encoding_text(&mut xot, "latin1", b"\x85"),
+        "\u{85}"
+    );
+    assert_eq!(
+        declared_encoding_text(&mut xot, "ISO-8859-11", b"\x80\x85\x91\x9f"),
+        "\u{80}\u{85}\u{91}\u{9f}"
+    );
+    assert_eq!(
+        declared_encoding_text(&mut xot, "windows-1254", b"\x80"),
+        "\u{20AC}"
+    );
+}
+
+#[test]
+fn test_parse_bytes_iso_8859_9() {
+    // ISO-8859-1 with six Turkish letters; names IANA registers for
+    // ISO-8859-9, in any case
+    let mut xot = Xot::new();
+    for name in [
+        "ISO-8859-9",
+        "iso-8859-9",
+        "ISO_8859-9",
+        "latin5",
+        "csISOLatin5",
+    ] {
+        assert_eq!(
+            declared_encoding_text(
+                &mut xot,
+                name,
+                &[0x80, 0xD0, 0xDD, 0xDE, 0xE9, 0xF0, 0xFD, 0xFE]
+            ),
+            "\u{80}\u{11E}\u{130}\u{15E}\u{E9}\u{11F}\u{131}\u{15F}",
+            "{}",
+            name
+        );
+    }
+}
+
+#[test]
+fn test_parse_bytes_tis_620() {
+    // the names IANA registers for TIS-620, in any case
+    let mut xot = Xot::new();
+    for name in ["TIS-620", "tis-620", "csTIS620", "ISO-8859-11"] {
+        assert_eq!(
+            declared_encoding_text(&mut xot, name, b"\x80\xa0\xa1\xda\xdf\xfb"),
+            "\u{80}\u{A0}\u{E01}\u{E3A}\u{E3F}\u{E5B}",
+            "{}",
+            name
+        );
+    }
+}
+
+#[test]
+fn test_parse_bytes_us_ascii() {
+    // names IANA registers for US-ASCII, and ASCII, in any case;
+    // ISO_646.irv:1991 is one too, but `:` cannot be in an encoding
+    // declaration
+    let mut xot = Xot::new();
+    for name in [
+        "US-ASCII",
+        "us-ascii",
+        "ASCII",
+        "ANSI_X3.4-1968",
+        "ANSI_X3.4-1986",
+        "ISO646-US",
+        "us",
+        "IBM367",
+        "csASCII",
+    ] {
+        let doc = xot
+            .parse_bytes(&declared_encoding_document(name, b"caf\x65 \x7f"))
+            .unwrap();
+        let doc_el = xot.document_element(doc).unwrap();
+        assert_eq!(
+            xot.text_content_str(doc_el),
+            Some("cafe \u{7f}"),
+            "{}",
+            name
+        );
+    }
+}
+
+#[test]
+fn test_parse_bytes_windows_1252() {
+    // windows-1252 has the euro sign at 0x80
+    let mut xot = Xot::new();
+    for name in ["windows-1252", "Windows-1252"] {
+        let doc = xot
+            .parse_bytes(&declared_encoding_document(name, b"\x80"))
+            .unwrap();
+        let doc_el = xot.document_element(doc).unwrap();
+        assert_eq!(xot.text_content_str(doc_el), Some("\u{20AC}"), "{}", name);
+    }
+}
+
 /// The namespace that `prefix` is declared for on the document element of
 /// `xml`.
 fn declared_namespace(xml: &str, prefix: &str) -> String {

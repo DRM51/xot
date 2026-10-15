@@ -48,6 +48,12 @@
   `&#x1;`, or with a sign, such as `&#+65;`, is now a parse error (see
   below).
 
+- `Xot::parse_bytes` decodes documents in US-ASCII, ISO-8859-1, ISO-8859-9
+  and TIS-620 (ISO-8859-11) as these encodings are defined, not as
+  windows-1252, windows-1254 and windows-874 (see below). In the ISO 8859
+  encodings the bytes 0x80 to 0x9F are now the control characters U+0080 to
+  U+009F, and in US-ASCII a byte of 0x80 or more is now an error.
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -145,6 +151,32 @@
   it now gives `ParseError::InvalidByteSequence`, with the name of the
   encoding and the byte offsets of the sequence in the input, byte order
   mark included.
+
+- `Xot::parse_bytes` decoded a document in US-ASCII, ISO-8859-1, ISO-8859-9
+  or TIS-620 (ISO-8859-11) as windows-1252, windows-1254 or windows-874, as
+  the WHATWG Encoding Standard, which `encoding_rs` follows, makes these
+  names stand for those encodings. So in the ISO 8859 encodings the bytes
+  0x80 to 0x9F became characters such as `€` instead of the control
+  characters U+0080 to U+009F, and a US-ASCII document could have bytes of
+  0x80 and more. XML 1.0 (section 4.3.3) asks for a name that IANA registers
+  to be taken as the encoding IANA registers it for, so these are now decoded
+  as defined: US-ASCII gives `ParseError::InvalidByteSequence` for a byte of
+  0x80 or more; ISO-8859-1 maps each byte to the character with the same
+  number; ISO-8859-9 does the same but for six Turkish letters; TIS-620 has
+  the Thai characters from 0xA1 on, and gives
+  `ParseError::InvalidByteSequence` for the bytes it has no character for.
+  TIS 620 itself has no character for 0xA0, but as IANA registers
+  ISO-8859-11 as another name for it, 0xA0 is NO-BREAK SPACE, as in
+  ISO-8859-11. This holds for these names, in any case: US-ASCII,
+  ANSI_X3.4-1968, ANSI_X3.4-1986, ISO646-US, us, IBM367 and csASCII, as well
+  as ASCII; ISO-8859-1, ISO_8859-1, latin1, IBM819 and csISOLatin1;
+  ISO-8859-9, ISO_8859-9, latin5 and csISOLatin5; TIS-620, csTIS620 and
+  ISO-8859-11. Several of these were not known before. windows-1252,
+  windows-1254 and windows-874 themselves, and the other WHATWG names for
+  them such as `iso8859-1`, still stand for those encodings. IANA registers
+  a few more names for US-ASCII, ISO-8859-1 and ISO-8859-9 that are not
+  covered yet: those that are WHATWG names of windows-1252 or windows-1254
+  stand for these, and the others are not known.
 
 - Serializing a text node without a parent, such as one made with
   `Xot::new_text`, panicked: with `Xot::to_string` and the other XML
