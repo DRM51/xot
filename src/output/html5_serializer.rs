@@ -4,7 +4,7 @@ use std::io;
 use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
 use crate::error::Error;
 use crate::id::NameId;
-use crate::output::Normalizer;
+use crate::output::{NoopNormalizer, Normalizer};
 use crate::xotdata::{Node, Xot};
 
 use super::fullname::FullnameSerializer;
@@ -209,7 +209,13 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                     });
                 }
 
-                let namespace = self.xot.namespace_str(*namespace_id);
+                // escaped like the value of an attribute in a namespace, and
+                // not normalized, as that would change the namespace
+                let namespace = serialize_attribute(
+                    self.xot.namespace_str(*namespace_id).into(),
+                    &NoopNormalizer,
+                    Escapes::MarkupOnly,
+                );
                 if *prefix_id == self.xot.empty_prefix_id {
                     OutputToken {
                         space: true,

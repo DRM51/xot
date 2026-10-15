@@ -74,14 +74,24 @@ impl DocumentBuilder {
         self.element_builder = Some(ElementBuilder::new(prefix, name));
     }
 
-    fn prefix(&mut self, prefix: &str, namespace_uri: &str, xot: &mut Xot) {
+    fn prefix(
+        &mut self,
+        prefix: &str,
+        value: StrSpan<'_>,
+        xot: &mut Xot,
+    ) -> Result<(), ParseError> {
+        // the namespace name is the normalized value of the namespace
+        // declaration attribute, with its references expanded like in any
+        // other attribute value (https://www.w3.org/TR/xml-names/#ns-decl)
+        let namespace_uri = parse_attribute(value.as_str().into(), value.start())?;
         let prefix_id = xot.prefix_lookup.get_id_mut(prefix);
-        let namespace_id = xot.namespace_lookup.get_id_mut(namespace_uri);
+        let namespace_id = xot.namespace_lookup.get_id_mut(namespace_uri.as_ref());
         self.element_builder
             .as_mut()
             .unwrap()
             .namespaces
             .push((prefix_id, namespace_id));
+        Ok(())
     }
 
     fn attribute(
@@ -681,9 +691,9 @@ impl Xot {
                         span: _,
                     } => {
                         if prefix.as_str() == "xmlns" {
-                            builder.prefix(local.as_str(), value.as_str(), self);
+                            builder.prefix(local.as_str(), value, self)?;
                         } else if local.as_str() == "xmlns" {
-                            builder.prefix("", value.as_str(), self);
+                            builder.prefix("", value, self)?;
                         } else {
                             builder.attribute(prefix, local, value)?;
                         }

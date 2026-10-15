@@ -39,6 +39,11 @@
   document, which it used to replace by U+FFFD REPLACEMENT CHARACTER (see
   below).
 
+- The parser reads the value of a namespace declaration like any attribute
+  value (see below): a namespace with an entity or character reference in
+  it changes, and an unknown or unclosed entity reference in it is now a
+  parse error.
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -98,6 +103,19 @@
   UTF-16 has to declare UTF-16 in that byte order. The spans of
   `UnsupportedEncoding` and `EncodingConflict` are byte offsets in the bytes
   given to `parse_bytes`, byte order mark included.
+
+- The parser took the value of a namespace declaration as it was written,
+  so `xmlns:p="a&amp;b"` declared the namespace `a&amp;b` instead of `a&b`,
+  and character references were not expanded either. The namespace is the
+  value of the declaration after attribute-value normalization, as Namespaces
+  in XML 1.0 (section 3) requires, so the parser now reads it like any other
+  attribute value.
+
+- Namespace declarations were written without escaping, so a namespace with
+  `&`, `<` or `"` gave output that is not well-formed. The XML serializer now
+  escapes the namespace like an attribute value, including tab, newline and
+  carriage return, so that it survives parsing the output again; the HTML 5
+  serializer escapes it like the value of an attribute in a namespace.
 
 - The parser left carriage returns in CDATA sections, comments and
   processing instructions as they were. XML 1.0 (section 2.11) makes a

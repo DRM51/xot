@@ -6,7 +6,7 @@ use xmlparser::XmlCharExt;
 use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
 use crate::error::Error;
 use crate::id::NameId;
-use crate::output::Normalizer;
+use crate::output::{NoopNormalizer, Normalizer};
 use crate::xotdata::{Node, Xot};
 
 use super::fullname::FullnameSerializer;
@@ -187,7 +187,14 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
                         text: "".to_string(),
                     });
                 }
-                let namespace = self.xot.namespace_str(*namespace_id);
+                // a namespace declaration is an attribute, so the namespace
+                // is escaped like an attribute value; it is not normalized,
+                // as that would change the namespace
+                let namespace = serialize_attribute(
+                    self.xot.namespace_str(*namespace_id).into(),
+                    &NoopNormalizer,
+                    self.escapes,
+                );
                 if *prefix_id == self.xot.empty_prefix_id {
                     OutputToken {
                         space: true,

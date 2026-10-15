@@ -650,3 +650,80 @@ fn test_parse_bytes_utf16_without_bom() {
     let doc_el = xot.document_element(doc).unwrap();
     assert_eq!(xot.text_content_str(doc_el), Some("\u{e9}"));
 }
+
+/// The namespace that `prefix` is declared for on the document element of
+/// `xml`.
+fn declared_namespace(xml: &str, prefix: &str) -> String {
+    let mut xot = Xot::new();
+    let doc = xot.parse(xml).unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    let prefix = xot.add_prefix(prefix);
+    let namespace = xot.namespaces(doc_el).get(prefix).copied().unwrap();
+    xot.namespace_str(namespace).to_string()
+}
+
+#[test]
+fn test_parse_namespace_declaration_with_entity_references() {
+    // the namespace is the value of the attribute, as with any attribute
+    assert_eq!(
+        declared_namespace(r#"<a xmlns:p="urn:x?a=1&amp;b=2"/>"#, "p"),
+        "urn:x?a=1&b=2"
+    );
+    assert_eq!(
+        declared_namespace(r#"<a xmlns:p="urn:&lt;&gt;&quot;&apos;"/>"#, "p"),
+        "urn:<>\"'"
+    );
+    assert_eq!(
+        declared_namespace(r#"<a xmlns="urn:a&amp;b"/>"#, ""),
+        "urn:a&b"
+    );
+}
+
+#[test]
+fn test_parse_namespace_declaration_with_character_references() {
+    assert_eq!(
+        declared_namespace(r#"<a xmlns:p="urn:&#x41;&#66;"/>"#, "p"),
+        "urn:AB"
+    );
+    // a character reference to a whitespace character is not normalized
+    assert_eq!(
+        declared_namespace(r#"<a xmlns="urn:a&#x9;b&#10;c"/>"#, ""),
+        "urn:a\u{9}b\u{A}c"
+    );
+}
+
+#[test]
+fn test_parse_namespace_declaration_normalized() {
+    // the value is normalized like that of any attribute: whitespace
+    // characters become spaces
+    assert_eq!(
+        declared_namespace("<a xmlns:p=\"urn:a\u{9}b\u{D}\u{A}c\"/>", "p"),
+        "urn:a b c"
+    );
+}
+
+#[test]
+fn test_parse_names_in_namespace_with_entity_references() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<p:a xmlns:p="urn:&amp;" xmlns="urn:&lt;" p:b="1"><c/></p:a>"#)
+        .unwrap();
+    let a = xot.document_element(doc).unwrap();
+    let c = xot.first_child(a).unwrap();
+    let amp = xot.namespace("urn:&").unwrap();
+    let lt = xot.namespace("urn:<").unwrap();
+    assert_eq!(xot.namespace_for_name(xot.element(a).unwrap().name()), amp);
+    assert_eq!(xot.namespace_for_name(xot.element(c).unwrap().name()), lt);
+    let b = xot.name_ns("b", amp).unwrap();
+    assert_eq!(xot.get_attribute(a, b), Some("1"));
+}
+
+#[test]
+fn test_parse_namespace_declaration_with_invalid_entity() {
+    let mut xot = Xot::new();
+    let err = xot.parse(r#"<a xmlns:p="urn:&unknown;"/>"#).unwrap_err();
+    assert!(matches!(err, ParseError::InvalidEntity(ref name, _) if name == "unknown"));
+    assert_eq!(err.span(), Span::new(16, 25));
+    let err = xot.parse(r#"<a xmlns="urn:&amp"/>"#).unwrap_err();
+    assert!(matches!(err, ParseError::UnclosedEntity(_, 14)));
+}

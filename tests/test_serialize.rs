@@ -319,3 +319,109 @@ fn test_html5_write_error() {
     let err = xot.html5().write(doc, &mut FailingWriter).unwrap_err();
     assert!(matches!(err, Error::Io(_)));
 }
+
+/// A document `<p:doc xmlns:p="{namespace}"/>`.
+fn document_in_namespace(xot: &mut Xot, namespace: &str) -> xot::Node {
+    let ns = xot.add_namespace(namespace);
+    let p = xot.add_prefix("p");
+    let doc_name = xot.add_name_ns("doc", ns);
+    let doc_el = xot.new_element(doc_name);
+    xot.set_namespace(doc_el, p, ns);
+    xot.new_document_with_element(doc_el).unwrap()
+}
+
+#[test]
+fn test_serialize_namespace_declaration_escaped() {
+    let mut xot = Xot::new();
+    let doc = document_in_namespace(&mut xot, "urn:x?a=1&b=2<>\"'");
+    assert_eq!(
+        xot.to_string(doc).unwrap(),
+        r#"<p:doc xmlns:p="urn:x?a=1&amp;b=2&lt;>&quot;&apos;"/>"#
+    );
+}
+
+#[test]
+fn test_serialize_default_namespace_declaration_escaped() {
+    let mut xot = Xot::new();
+    let ns = xot.add_namespace("urn:a&b");
+    let doc_name = xot.add_name_ns("doc", ns);
+    let doc_el = xot.new_element(doc_name);
+    let empty = xot.empty_prefix();
+    xot.set_namespace(doc_el, empty, ns);
+    let doc = xot.new_document_with_element(doc_el).unwrap();
+    assert_eq!(xot.to_string(doc).unwrap(), r#"<doc xmlns="urn:a&amp;b"/>"#);
+}
+
+#[test]
+fn test_serialize_namespace_declaration_whitespace() {
+    // whitespace characters are written as character references, so that
+    // attribute-value normalization does not turn them into spaces
+    let mut xot = Xot::new();
+    let doc = document_in_namespace(&mut xot, "urn:a\u{9}b\u{A}c\u{D}d");
+    assert_eq!(
+        xot.to_string(doc).unwrap(),
+        r#"<p:doc xmlns:p="urn:a&#x9;b&#xA;c&#xD;d"/>"#
+    );
+}
+
+#[test]
+fn test_namespace_declaration_round_trip() {
+    let namespace = "urn:x?a=1&b=2<>\"'\u{9}\u{A}\u{D}\u{85}\u{2028}";
+    let mut xot = Xot::new();
+    let doc = document_in_namespace(&mut xot, namespace);
+    let serialized = xot.to_string(doc).unwrap();
+    let doc = xot.parse(&serialized).unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    let ns = xot.namespace_for_name(xot.element(doc_el).unwrap().name());
+    assert_eq!(xot.namespace_str(ns), namespace);
+    assert_eq!(xot.to_string(doc).unwrap(), serialized);
+}
+
+#[test]
+fn test_serialize_parsed_namespace_declaration() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<p:doc xmlns:p="urn:a&#38;b&#60;c&#34;"><p:e/></p:doc>"#)
+        .unwrap();
+    assert_eq!(
+        xot.to_string(doc).unwrap(),
+        r#"<p:doc xmlns:p="urn:a&amp;b&lt;c&quot;"><p:e/></p:doc>"#
+    );
+    // a node serialized on its own declares the namespace it inherits
+    let doc_el = xot.document_element(doc).unwrap();
+    let e = xot.first_child(doc_el).unwrap();
+    assert_eq!(
+        xot.to_string(e).unwrap(),
+        r#"<p:e xmlns:p="urn:a&amp;b&lt;c&quot;"/>"#
+    );
+}
+
+#[test]
+fn test_html5_namespace_declaration_escaped() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<html><body><island xmlns="urn:a&#38;b&#34;c">text</island></body></html>"#)
+        .unwrap();
+    assert_eq!(
+        xot.html5().to_string(doc).unwrap(),
+        r#"<!DOCTYPE html><html><body><island xmlns="urn:a&amp;b&quot;c">text</island></body></html>"#
+    );
+}
+
+#[test]
+fn test_html5_namespace_declaration_from_api_escaped() {
+    let mut xot = Xot::new();
+    let doc = xot.parse("<html><body/></html>").unwrap();
+    let html = xot.document_element(doc).unwrap();
+    let body = xot.first_child(html).unwrap();
+    let ns = xot.add_namespace("urn:a&b\"c");
+    let island_name = xot.add_name_ns("island", ns);
+    let island = xot.new_element(island_name);
+    let empty = xot.empty_prefix();
+    xot.set_namespace(island, empty, ns);
+    xot.append(body, island).unwrap();
+    assert_eq!(
+        xot.html5().to_string(doc).unwrap(),
+        r#"<!DOCTYPE html><html><body><island xmlns="urn:a&amp;b&quot;c"></island></body></html>"#
+    );
+}
