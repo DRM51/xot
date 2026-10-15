@@ -266,6 +266,13 @@
   declaration; it now fails with `Error::InvalidTarget`. `Xot::tokens`,
   `Xot::pretty_tokens` and HTML 5 output are unchanged.
 
+- `Xot::prefix_for_namespace` gave `None` as soon as it came to a
+  declaration of a prefix that an inner element declares again, so it
+  missed the prefixes declared after it: with
+  `<a xmlns:p="urn:A" xmlns:q="urn:C"><b xmlns:p="urn:B"/></a>` it gave no
+  prefix for `urn:C` on `b`. It now skips the shadowed declaration and gives
+  `q`.
+
 ## [0.31.2] - 2025-04-09
 
 ### Bugs fixed

@@ -251,6 +251,44 @@ fn test_prefix_for_namespace_overridden() {
 }
 
 #[test]
+fn test_prefix_for_namespace_other_prefix_after_shadowed_one() {
+    // `p` is declared again on `b`, so the outer `p` is not in scope there,
+    // but `q`, which comes after it on `a`, is
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<a xmlns:p="urn:A" xmlns:q="urn:C"><b xmlns:p="urn:B"/></a>"#)
+        .unwrap();
+    let a = xot.document_element(doc).unwrap();
+    let b = xot.first_child(a).unwrap();
+    let p_prefix = xot.add_prefix("p");
+    let q_prefix = xot.add_prefix("q");
+    let urn_a = xot.add_namespace("urn:A");
+    let urn_b = xot.add_namespace("urn:B");
+    let urn_c = xot.add_namespace("urn:C");
+
+    assert_eq!(xot.prefix_for_namespace(b, urn_c), Some(q_prefix));
+    assert_eq!(xot.prefix_for_namespace(b, urn_b), Some(p_prefix));
+    assert_eq!(xot.prefix_for_namespace(b, urn_a), None);
+    assert_eq!(xot.prefix_for_namespace(a, urn_a), Some(p_prefix));
+}
+
+#[test]
+fn test_prefix_for_namespace_xml_after_shadowed_prefix() {
+    // the `xml` prefix is in scope without a declaration
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<a xmlns:p="urn:A"><b xmlns:p="urn:B"/></a>"#)
+        .unwrap();
+    let a = xot.document_element(doc).unwrap();
+    let b = xot.first_child(a).unwrap();
+    let xml_prefix = xot.add_prefix("xml");
+    assert_eq!(
+        xot.prefix_for_namespace(b, xot.xml_namespace()),
+        Some(xml_prefix)
+    );
+}
+
+#[test]
 fn test_prefix_for_namespace_default_and_undeclared() {
     let mut xot = Xot::new();
     let doc = xot

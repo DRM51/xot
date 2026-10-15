@@ -510,14 +510,33 @@ impl Xot {
 
     /// Find prefix for a namespace in node or ancestors.
     ///
-    /// Returns `None` if no prefix is defined for the namespace.
+    /// Returns `None` if no prefix is defined for the namespace. A prefix
+    /// that an inner element declares again for another namespace does not
+    /// count for the outer declaration, as it is not in scope:
+    ///
+    /// ```rust
+    /// use xot::Xot;
+    ///
+    /// let mut xot = Xot::new();
+    /// let root = xot.parse(r#"<a xmlns:p="urn:A" xmlns:q="urn:C"><b xmlns:p="urn:B"/></a>"#)?;
+    /// let a = xot.document_element(root)?;
+    /// let b = xot.first_child(a).unwrap();
+    ///
+    /// let urn_a = xot.namespace("urn:A").unwrap();
+    /// let urn_c = xot.namespace("urn:C").unwrap();
+    /// assert_eq!(xot.prefix_for_namespace(b, urn_c), xot.prefix("q"));
+    /// assert_eq!(xot.prefix_for_namespace(b, urn_a), None);
+    /// assert_eq!(xot.prefix_for_namespace(a, urn_a), xot.prefix("p"));
+    /// # Ok::<(), xot::Error>(())
+    /// ```
     pub fn prefix_for_namespace(&self, node: Node, namespace: NamespaceId) -> Option<PrefixId> {
         let mut seen = HashSet::default();
 
         for ancestor in self.ancestors(node) {
             for (key, value) in self.namespaces(ancestor).iter() {
+                // an inner declaration of the prefix shadows this one
                 if seen.contains(&key) {
-                    return None;
+                    continue;
                 }
                 seen.insert(key);
                 if *value == namespace {
@@ -527,7 +546,7 @@ impl Xot {
         }
         for (key, value) in self.base_prefixes() {
             if seen.contains(&key) {
-                return None;
+                continue;
             }
             seen.insert(key);
             if value == namespace {
