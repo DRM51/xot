@@ -124,6 +124,38 @@ fn test_ampersand_in_cdata() -> Result<(), ParseError> {
 }
 
 #[test]
+fn test_character_references_to_legal_characters() -> Result<(), ParseError> {
+    // the characters at the ends of the ranges that the `Char` production of
+    // XML 1.0 allows
+    let mut xot = Xot::new();
+    let doc = xot.parse(
+        r#"<a b="&#x9;&#xD7FF;&#xE000;&#xFFFD;&#x10000;&#x10FFFF;">&#xD;&#x20;&#xFFFD;&#1114111;</a>"#,
+    )?;
+    let doc_el = xot.document_element(doc).unwrap();
+    let b = xot.add_name("b");
+    assert_eq!(
+        xot.get_attribute(doc_el, b),
+        Some("\u{9}\u{D7FF}\u{E000}\u{FFFD}\u{10000}\u{10FFFF}")
+    );
+    assert_eq!(
+        xot.text_content_str(doc_el),
+        Some("\u{D}\u{20}\u{FFFD}\u{10FFFF}")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_character_reference_in_cdata_is_text() -> Result<(), ParseError> {
+    // a CDATA section has no references, so this is not a reference to a
+    // character that XML 1.0 does not allow
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<a><![CDATA[&#x1;]]></a>"#)?;
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("&#x1;"));
+    Ok(())
+}
+
+#[test]
 fn test_parse_with_span_info_element_start_unprefixed() {
     let mut xot = Xot::new();
     let (doc, span_info) = xot.parse_with_span_info(r#"<a></a>"#).unwrap();

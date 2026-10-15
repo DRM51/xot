@@ -35,6 +35,12 @@ pub enum ParseError {
     ///
     /// This holds what is between `&` and `;`, and the span of the reference,
     /// from `&` to `;`, in the parsed text.
+    ///
+    /// This is also the error for a character reference that is not
+    /// well-formed, such as `&#xG;` or `&#+65;`, or that refers to a
+    /// character that XML 1.0 does not allow, such as `&#x1;` (XML 1.0 section
+    /// 4.1, "WFC: Legal Character"). The string is then what is between `&#`
+    /// and `;`, such as `x1`.
     InvalidEntity(String, Span),
     /// You used a namespace prefix that is not declared during parsing.
     ///

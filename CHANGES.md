@@ -44,6 +44,10 @@
   it changes, and an unknown or unclosed entity reference in it is now a
   parse error.
 
+- A character reference to a character that XML 1.0 does not allow, such as
+  `&#x1;`, or with a sign, such as `&#+65;`, is now a parse error (see
+  below).
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -123,6 +127,17 @@
   a newline everywhere in the document, as the parser already did in text
   and attribute values. Spans and the positions in parse errors are still
   positions in the source text.
+
+- The parser accepted character references to characters that XML 1.0 does
+  not allow, such as `&#x1;`, `&#0;` and `&#xFFFE;`, and put these characters
+  in the text or attribute value. XML 1.0 allows a reference only to a
+  character that matches the `Char` production (section 4.1, "WFC: Legal
+  Character"), so such a reference in text, in an attribute value or in a
+  namespace declaration is now a parse error, `ParseError::InvalidEntity`
+  with the span of the reference, as a reference to a surrogate such as
+  `&#xD800;` already was. The same goes for a reference with a sign, such as
+  `&#+65;` or `&#x+41;`, which the parser took for `A`: the `CharRef`
+  production allows only digits.
 
 - `Xot::parse_bytes` replaced a byte sequence that is not valid in the
   encoding of the document by U+FFFD REPLACEMENT CHARACTER and parsed the

@@ -170,6 +170,67 @@ fn test_invalid_entity() {
     assert_eq!(err.span(), (5..10).into());
 }
 
+// XML 1.0 allows a character reference only to a character that matches the
+// `Char` production (section 4.1, "WFC: Legal Character"); the span is that
+// of the reference
+
+#[test]
+fn test_character_reference_to_illegal_character_in_text() {
+    let mut xot = Xot::new();
+    let err = xot.parse("<doc>a&#x1;b</doc>").unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "x1"));
+    assert_eq!(err.span(), (6..11).into());
+    let err = xot.parse("<doc>&#0;</doc>").unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "0"));
+    assert_eq!(err.span(), (5..9).into());
+    let err = xot.parse("<doc>&#xFFFE;</doc>").unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "xFFFE"));
+    assert_eq!(err.span(), (5..13).into());
+}
+
+#[test]
+fn test_character_reference_to_illegal_character_in_attribute() {
+    let mut xot = Xot::new();
+    let err = xot.parse(r#"<doc a="x&#xB;"/>"#).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "xB"));
+    assert_eq!(err.span(), (9..14).into());
+}
+
+#[test]
+fn test_character_reference_to_illegal_character_in_namespace_declaration() {
+    let mut xot = Xot::new();
+    let err = xot.parse(r#"<doc xmlns:p="urn:&#xFFFF;"/>"#).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "xFFFF"));
+    assert_eq!(err.span(), (18..26).into());
+    let err = xot.parse(r#"<doc xmlns="&#31;"/>"#).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "31"));
+    assert_eq!(err.span(), (12..17).into());
+}
+
+#[test]
+fn test_character_reference_to_illegal_character_in_fragment() {
+    let mut xot = Xot::new();
+    let err = xot.parse_fragment("a&#x8;").unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "x8"));
+    assert_eq!(err.span(), (1..6).into());
+}
+
+#[test]
+fn test_character_reference_with_sign() {
+    // a character reference has only digits after `&#` or `&#x`, without a
+    // sign (production `CharRef`)
+    let mut xot = Xot::new();
+    let err = xot.parse("<doc>&#+65;</doc>").unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "+65"));
+    assert_eq!(err.span(), (5..11).into());
+    let err = xot.parse(r#"<doc a="&#x+41;"/>"#).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "x+41"));
+    assert_eq!(err.span(), (8..15).into());
+    let err = xot.parse(r#"<doc xmlns:p="urn:&#+65;"/>"#).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidEntity(ref s, _) if s == "+65"));
+    assert_eq!(err.span(), (18..24).into());
+}
+
 #[test]
 fn test_parse_bytes_unknown_encoding() {
     let xml = br#"<?xml version="1.0" encoding="x-unknown"?><doc/>"#;

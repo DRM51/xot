@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::fmt::Write;
 
+use xmlparser::XmlCharExt;
+
 use crate::error::ParseError;
 use crate::output::Normalizer;
 use crate::Span;
@@ -127,29 +129,31 @@ fn parse_content(
             change = true;
 
             if let Some(entity) = entity.strip_prefix('#') {
-                let first_char = entity.chars().next().ok_or_else(|| {
+                let invalid = || {
                     ParseError::InvalidEntity(
                         entity.to_string(),
                         Span::new(base_position + position, base_position + end_position),
                     )
-                })?;
-                let code = if first_char == 'x' {
-                    u32::from_str_radix(&entity[1..], 16)
-                } else {
-                    entity.parse::<u32>()
                 };
-                let code = code.map_err(|_| {
-                    ParseError::InvalidEntity(
-                        entity.to_string(),
-                        Span::new(base_position + position, base_position + end_position),
-                    )
-                })?;
-                let c = std::char::from_u32(code).ok_or_else(|| {
-                    ParseError::InvalidEntity(
-                        entity.to_string(),
-                        Span::new(base_position + position, base_position + end_position),
-                    )
-                })?;
+                // only digits, decimal or after `x` hexadecimal (production
+                // `CharRef`, https://www.w3.org/TR/xml/#sec-references);
+                // Rust's integer parsing would also take a sign
+                let (digits, radix) = match entity.strip_prefix('x') {
+                    Some(digits) => (digits, 16),
+                    None => (entity, 10),
+                };
+                if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                    return Err(invalid());
+                }
+                // the reference must be to a character that XML allows
+                // (https://www.w3.org/TR/xml/#wf-Legalchar), which leaves
+                // out most control characters, #xFFFE and #xFFFF as well as
+                // surrogates and numbers that are not characters at all
+                let c = u32::from_str_radix(digits, radix)
+                    .ok()
+                    .and_then(std::char::from_u32)
+                    .filter(|c| c.is_xml_char())
+                    .ok_or_else(invalid)?;
                 result.push(c);
             } else {
                 match entity.as_str() {
@@ -592,6 +596,110 @@ mod tests {
     fn test_parse_character_broken_hex_entity() {
         let text = "A &xflub#; B";
         assert!(parse_text(text.into(), 0).is_err());
+    }
+
+    /// Check that each reference, with text around it, is an invalid entity
+    /// with the given string and the span of the reference, in text and in
+    /// attribute values alike.
+    fn assert_invalid_references(references: &[(&str, &str)]) {
+        for (reference, entity) in references {
+            let content = format!("ab{}cd", reference);
+            let span = Span::new(12, 12 + reference.len());
+            for result in [
+                parse_text(content.as_str().into(), 10),
+                parse_attribute(content.as_str().into(), 10),
+            ] {
+                match result {
+                    Err(ParseError::InvalidEntity(e, s)) => {
+                        assert_eq!((e.as_str(), s), (*entity, span), "{}", reference)
+                    }
+                    other => panic!("{}: expected InvalidEntity, got {:?}", reference, other),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_character_reference_to_illegal_character() {
+        // a character reference must refer to a character that matches the
+        // `Char` production (https://www.w3.org/TR/xml/#wf-Legalchar)
+        assert_invalid_references(&[
+            ("&#0;", "0"),
+            ("&#x0;", "x0"),
+            ("&#x1;", "x1"),
+            ("&#8;", "8"),
+            ("&#xB;", "xB"),
+            ("&#xc;", "xc"),
+            ("&#xE;", "xE"),
+            ("&#x1F;", "x1F"),
+            ("&#31;", "31"),
+            ("&#xFFFE;", "xFFFE"),
+            ("&#xFFFF;", "xFFFF"),
+            ("&#65535;", "65535"),
+            // surrogates and numbers beyond Unicode are not characters at all
+            ("&#xD800;", "xD800"),
+            ("&#xDFFF;", "xDFFF"),
+            ("&#x110000;", "x110000"),
+            ("&#99999999999;", "99999999999"),
+        ]);
+    }
+
+    #[test]
+    fn test_parse_character_reference_not_digits() {
+        // a character reference has decimal digits after `&#` and hexadecimal
+        // digits after `&#x`, and nothing else (production `CharRef`,
+        // https://www.w3.org/TR/xml/#sec-references); Rust's integer parsing
+        // would also take a sign
+        assert_invalid_references(&[
+            ("&#+65;", "+65"),
+            ("&#x+41;", "x+41"),
+            ("&#-65;", "-65"),
+            ("&#x-41;", "x-41"),
+            ("&#;", ""),
+            ("&#x;", "x"),
+            ("&#X41;", "X41"),
+            ("&#x41x;", "x41x"),
+            ("&# 65;", " 65"),
+            ("&#6 5;", "6 5"),
+            ("&#6A;", "6A"),
+            ("&#x4G;", "x4G"),
+            ("&#65.0;", "65.0"),
+        ]);
+    }
+
+    #[test]
+    fn test_parse_character_reference_digits() {
+        // leading zeros, and hexadecimal digits in either case
+        for (reference, c) in [
+            ("&#0065;", 'A'),
+            ("&#x0041;", 'A'),
+            ("&#x4a;", 'J'),
+            ("&#x4A;", 'J'),
+            ("&#xe9;", '\u{E9}'),
+        ] {
+            assert_eq!(parse_text(reference.into(), 0).unwrap(), c.to_string());
+            assert_eq!(parse_attribute(reference.into(), 0).unwrap(), c.to_string());
+        }
+    }
+
+    #[test]
+    fn test_parse_character_reference_to_legal_character() {
+        // the characters at the ends of the ranges that `Char` allows
+        for (reference, c) in [
+            ("&#x9;", '\u{9}'),
+            ("&#xA;", '\u{A}'),
+            ("&#xD;", '\u{D}'),
+            ("&#x20;", '\u{20}'),
+            ("&#xD7FF;", '\u{D7FF}'),
+            ("&#xE000;", '\u{E000}'),
+            ("&#xFFFD;", '\u{FFFD}'),
+            ("&#x10000;", '\u{10000}'),
+            ("&#x10FFFF;", '\u{10FFFF}'),
+            ("&#1114111;", '\u{10FFFF}'),
+        ] {
+            assert_eq!(parse_text(reference.into(), 0).unwrap(), c.to_string());
+            assert_eq!(parse_attribute(reference.into(), 0).unwrap(), c.to_string());
+        }
     }
 
     #[test]
