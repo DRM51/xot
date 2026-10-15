@@ -20,8 +20,8 @@
   `encoding=` outside the XML declaration (see below): a document without a
   byte order mark or an encoding declaration is UTF-8. For example, an
   HTML-like document with `<meta charset="iso-8859-1"/>` and the byte 0xE9
-  in its text used to give "é", and now gives U+FFFD REPLACEMENT CHARACTER
-  there, as a lone 0xE9 is not valid UTF-8.
+  in its text used to give "é", and now gives
+  `ParseError::InvalidByteSequence`, as a lone 0xE9 is not valid UTF-8.
 
 - XML output escapes more characters, so that text and attribute values
   survive parsing the output again (see below). Output that contains these
@@ -33,6 +33,11 @@
 
 - `Error` has a new variant `InvalidCharacter`. XML serialization returns it
   instead of writing a character that XML 1.0 does not allow (see below).
+
+- `ParseError` has a new variant `InvalidByteSequence`. `Xot::parse_bytes`
+  returns it for a byte sequence that is not valid in the encoding of the
+  document, which it used to replace by U+FFFD REPLACEMENT CHARACTER (see
+  below).
 
 ### Features added
 
@@ -93,6 +98,13 @@
   UTF-16 has to declare UTF-16 in that byte order. The spans of
   `UnsupportedEncoding` and `EncodingConflict` are byte offsets in the bytes
   given to `parse_bytes`, byte order mark included.
+
+- `Xot::parse_bytes` replaced a byte sequence that is not valid in the
+  encoding of the document by U+FFFD REPLACEMENT CHARACTER and parsed the
+  result. The XML specification makes this a fatal error (section 4.3.3), so
+  it now gives `ParseError::InvalidByteSequence`, with the name of the
+  encoding and the byte offsets of the sequence in the input, byte order
+  mark included.
 
 - Serializing a text node without a parent, such as one made with
   `Xot::new_text`, panicked: with `Xot::to_string` and the other XML

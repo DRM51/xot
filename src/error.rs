@@ -10,9 +10,9 @@ use crate::{xotdata::Node, Span};
 ///
 /// The errors that `parse_bytes` reports while it decodes the bytes, before
 /// it parses, are the exception: the spans of
-/// [`ParseError::UnsupportedEncoding`] and [`ParseError::EncodingConflict`]
-/// are byte offsets in the bytes given to `parse_bytes`, byte order mark
-/// included.
+/// [`ParseError::UnsupportedEncoding`], [`ParseError::EncodingConflict`] and
+/// [`ParseError::InvalidByteSequence`] are byte offsets in the bytes given to
+/// `parse_bytes`, byte order mark included.
 #[derive(Debug, Clone)]
 pub enum ParseError {
     /// The XML is not well-formed - a tag is opened and never closed.
@@ -79,6 +79,15 @@ pub enum ParseError {
     /// of most errors, this span is a range of byte offsets in the bytes given
     /// to `parse_bytes`, byte order mark included.
     EncodingConflict(String, String, Span),
+    /// A byte sequence that is not valid in the encoding of the document,
+    /// reported by [`Xot::parse_bytes`](crate::Xot::parse_bytes). XML 1.0
+    /// (section 4.3.3) makes this a fatal error.
+    ///
+    /// This holds the name of the encoding, such as `UTF-8`, and the span of
+    /// the byte sequence. Unlike the spans of most errors, this span is a
+    /// range of byte offsets in the bytes given to `parse_bytes`, byte order
+    /// mark included: there is no decoded text to point into.
+    InvalidByteSequence(String, Span),
     /// Unsupported standalone declaration. This error is deprecated since version 0.29, and both
     /// "yes" and "no" values are accepted for the standalone declaration.
     #[deprecated(
@@ -134,6 +143,7 @@ impl ParseError {
             ParseError::UnsupportedVersion(_, span) => *span,
             ParseError::UnsupportedEncoding(_, span) => *span,
             ParseError::EncodingConflict(_, _, span) => *span,
+            ParseError::InvalidByteSequence(_, span) => *span,
             #[allow(deprecated)]
             ParseError::UnsupportedNotStandalone(span) => *span,
             ParseError::DtdUnsupported(span) => *span,
@@ -299,6 +309,11 @@ impl std::fmt::Display for ParseError {
                 f,
                 "Encoding conflict: declared {}, found {}",
                 declared, found
+            ),
+            ParseError::InvalidByteSequence(s, span) => write!(
+                f,
+                "Invalid byte sequence for encoding {} at byte {}",
+                s, span.start
             ),
             #[allow(deprecated)]
             ParseError::UnsupportedNotStandalone(_) => write!(f, "Unsupported standalone"),

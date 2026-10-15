@@ -1,4 +1,4 @@
-//! Determine the encoding of an XML document given as bytes.
+//! Determine the encoding of an XML document given as bytes, and decode it.
 //!
 //! This follows the XML 1.0 specification, section 4.3.3 and appendix F: a
 //! byte order mark determines the encoding; without one the encoding
@@ -6,7 +6,7 @@
 //! UTF-8. An encoding declaration that does not match the byte order mark, or
 //! the way the first characters are written in bytes, is a fatal error.
 
-use encoding_rs::{Encoding, REPLACEMENT, UTF_16BE, UTF_16LE, UTF_8};
+use encoding_rs::{DecoderResult, Encoding, REPLACEMENT, UTF_16BE, UTF_16LE, UTF_8};
 
 use crate::{error::ParseError, Span};
 
@@ -34,13 +34,42 @@ impl Family {
 
 /// Decode `data` into a string, in the encoding [`encoding`] determines.
 ///
-/// A byte order mark is removed. Byte sequences that are not valid in the
-/// encoding become U+FFFD REPLACEMENT CHARACTER.
+/// A byte order mark is removed. A byte sequence that is not valid in the
+/// encoding is a fatal error (XML 1.0 section 4.3.3), reported with the
+/// offsets of its bytes in `data`.
 pub(crate) fn decode(data: &[u8]) -> Result<String, ParseError> {
     let (encoding, start) = encoding(data)?;
     // the byte order mark is not part of the text
-    let (text, _) = encoding.decode_without_bom_handling(&data[start..]);
-    Ok(text.into_owned())
+    let mut read = start;
+    let mut decoder = encoding.new_decoder_without_bom_handling();
+    let capacity = decoder
+        .max_utf8_buffer_length_without_replacement(data.len() - read)
+        .unwrap_or(data.len());
+    let mut text = String::with_capacity(capacity);
+    loop {
+        let (result, consumed) =
+            decoder.decode_to_string_without_replacement(&data[read..], &mut text, true);
+        read += consumed;
+        match result {
+            DecoderResult::InputEmpty => return Ok(text),
+            DecoderResult::OutputFull => {
+                // the capacity is the worst case, so this is not expected;
+                // go on with twice the room
+                let mut larger = String::with_capacity(text.capacity().max(16) * 2);
+                larger.push_str(&text);
+                text = larger;
+            }
+            DecoderResult::Malformed(length, consumed_after) => {
+                // the sequence ends `consumed_after` bytes before what is read
+                let end = read - usize::from(consumed_after);
+                let start = end - usize::from(length);
+                return Err(ParseError::InvalidByteSequence(
+                    encoding.name().to_string(),
+                    Span::new(start, end),
+                ));
+            }
+        }
+    }
 }
 
 /// Determine the encoding of the XML document in `data`, and the length of
@@ -563,14 +592,20 @@ mod tests {
         assert_eq!(unsupported(b"\x4C\x6F\xA7\x94\x93").0, "EBCDIC");
     }
 
+    fn invalid(data: &[u8]) -> (String, Span) {
+        match decode(data) {
+            Err(ParseError::InvalidByteSequence(name, span)) => (name, span),
+            other => panic!("expected InvalidByteSequence, got {:?}", other),
+        }
+    }
+
     #[test]
     fn test_decode() {
         assert_eq!(
             decode(b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><p>\xe9</p>").unwrap(),
             "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><p>\u{e9}</p>"
         );
-        // without a declaration the document is UTF-8
-        assert_eq!(decode(b"<p>\xe9</p>").unwrap(), "<p>\u{FFFD}</p>");
+        assert_eq!(decode(b"<p>\xc3\xa9</p>").unwrap(), "<p>\u{e9}</p>");
         assert_eq!(decode(b"\xEF\xBB\xBF<p/>").unwrap(), "<p/>");
         assert_eq!(
             decode(&utf16be(
@@ -579,5 +614,72 @@ mod tests {
             .unwrap(),
             "<?xml version=\"1.0\" encoding=\"UTF-16\"?><p/>"
         );
+        assert_eq!(
+            decode(&utf16le("\u{FEFF}<p>\u{10000}</p>")).unwrap(),
+            "<p>\u{10000}</p>"
+        );
+    }
+
+    #[test]
+    fn test_decode_invalid_utf8() {
+        // without a declaration the document is UTF-8, in which a lone 0xE9
+        // is not valid
+        assert_eq!(
+            invalid(b"<p>\xe9</p>"),
+            ("UTF-8".to_string(), Span::new(3, 4))
+        );
+        assert_eq!(
+            invalid(b"<p>\xff</p>"),
+            ("UTF-8".to_string(), Span::new(3, 4))
+        );
+        // a sequence cut short by a byte that cannot continue it
+        assert_eq!(
+            invalid(b"<p>\xe2\x82</p>"),
+            ("UTF-8".to_string(), Span::new(3, 5))
+        );
+        // a sequence cut short by the end of the input
+        assert_eq!(
+            invalid(b"<p/>\xe2\x82"),
+            ("UTF-8".to_string(), Span::new(4, 6))
+        );
+        // the UTF-8 form of a surrogate, which is not a character
+        assert_eq!(
+            invalid(b"<p>\xed\xa0\x80</p>"),
+            ("UTF-8".to_string(), Span::new(3, 4))
+        );
+    }
+
+    #[test]
+    fn test_decode_invalid_after_bom() {
+        // the offsets count the byte order mark
+        assert_eq!(
+            invalid(b"\xEF\xBB\xBF<p>\xff</p>"),
+            ("UTF-8".to_string(), Span::new(6, 7))
+        );
+    }
+
+    #[test]
+    fn test_decode_invalid_utf16() {
+        // a low surrogate without a high surrogate
+        let mut data = utf16le("\u{FEFF}<p>");
+        data.extend([0x00, 0xDC]);
+        data.extend(utf16le("</p>"));
+        assert_eq!(invalid(&data), ("UTF-16LE".to_string(), Span::new(8, 10)));
+        // a high surrogate without a low surrogate
+        let mut data = utf16be("\u{FEFF}<p>");
+        data.extend([0xD8, 0x00]);
+        data.extend(utf16be("</p>"));
+        assert_eq!(invalid(&data), ("UTF-16BE".to_string(), Span::new(8, 10)));
+        // an odd number of bytes
+        let mut data = utf16le("\u{FEFF}<p/>");
+        data.push(b'\n');
+        assert_eq!(invalid(&data), ("UTF-16LE".to_string(), Span::new(10, 11)));
+    }
+
+    #[test]
+    fn test_decode_invalid_declared_encoding() {
+        // 0xA0 is not a character in Shift_JIS
+        let data = b"<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><p>\xa0</p>";
+        assert_eq!(invalid(data), ("Shift_JIS".to_string(), Span::new(45, 46)));
     }
 }

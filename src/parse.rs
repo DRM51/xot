@@ -819,11 +819,13 @@ impl Xot {
     ///
     /// The encoding follows the rules of the XML specification: a byte
     /// order mark decides it; without one, the encoding declaration in the XML
-    /// declaration does; without either, the document is UTF-8. Byte
-    /// sequences that are not valid in the encoding are replaced by U+FFFD
-    /// REPLACEMENT CHARACTER. If the encoding declaration names an encoding
-    /// that is not known, or the document is in an encoding that cannot be
-    /// decoded, such as UTF-32, you get [`ParseError::UnsupportedEncoding`].
+    /// declaration does; without either, the document is UTF-8. If the
+    /// encoding declaration names an encoding that is not known, or the
+    /// document is in an encoding that cannot be decoded, such as UTF-32, you
+    /// get [`ParseError::UnsupportedEncoding`]. A byte sequence that is not
+    /// valid in the encoding is a fatal error, as the XML specification
+    /// requires: you get [`ParseError::InvalidByteSequence`], with the byte
+    /// offsets of the sequence.
     ///
     /// An encoding declaration has to match the byte order mark, and the way
     /// the first characters are written in bytes, or you get

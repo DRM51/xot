@@ -278,3 +278,57 @@ fn test_parse_bytes_utf32() {
     assert!(matches!(err, xot::ParseError::UnsupportedEncoding(ref name, _) if name == "UTF-32LE"));
     assert_eq!(err.span(), (0..0).into());
 }
+
+#[test]
+fn test_parse_bytes_invalid_byte_sequence() {
+    // without a byte order mark or an encoding declaration the document is
+    // UTF-8, in which 0xE9 is not a character on its own
+    let xml = b"<doc>caf\xe9</doc>";
+    let mut xot = Xot::new();
+    let err = xot.parse_bytes(xml).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "UTF-8"));
+    assert_eq!(err.span(), (8..9).into());
+    assert_eq!(
+        err.to_string(),
+        "Invalid byte sequence for encoding UTF-8 at byte 8"
+    );
+}
+
+#[test]
+fn test_parse_bytes_charset_outside_declaration() {
+    // `charset=` outside the XML declaration does not give the encoding: the
+    // document is UTF-8, in which 0xE9 is not a character on its own
+    let xml = b"<html><head><meta charset=\"iso-8859-1\"/></head><body>\xe9</body></html>";
+    let mut xot = Xot::new();
+    let err = xot.parse_bytes(xml).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "UTF-8"));
+    assert_eq!(err.span(), (53..54).into());
+}
+
+#[test]
+fn test_parse_bytes_invalid_byte_sequence_declared_encoding() {
+    // 0xFD is not a character in Shift_JIS
+    let xml = b"<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><doc>\xfd</doc>";
+    let mut xot = Xot::new();
+    let err = xot.parse_bytes(xml).unwrap_err();
+    assert!(
+        matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "Shift_JIS")
+    );
+    assert_eq!(err.span(), (47..48).into());
+}
+
+#[test]
+fn test_parse_bytes_invalid_byte_sequence_utf16() {
+    // a high surrogate without a low surrogate; the offsets are in bytes and
+    // count the byte order mark
+    let mut xml: Vec<u8> = "\u{FEFF}<doc>"
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    xml.extend([0x00, 0xD8]);
+    xml.extend("</doc>".encode_utf16().flat_map(|u| u.to_le_bytes()));
+    let mut xot = Xot::new();
+    let err = xot.parse_bytes(&xml).unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "UTF-16LE"));
+    assert_eq!(err.span(), (12..14).into());
+}
