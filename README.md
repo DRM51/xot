@@ -1,5 +1,7 @@
 # Xot - XML Object Tree
 
+This is a fork of [faassen/xot](https://github.com/faassen/xot) carrying fixes that are not released upstream yet; see CHANGES.md.
+
 [![Crates.io](https://img.shields.io/crates/v/xot.svg)](https://crates.io/crates/xot)
 [![Documentation](https://docs.rs/xot/badge.svg)](https://docs.rs/xot)
 
