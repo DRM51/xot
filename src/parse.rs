@@ -3,7 +3,7 @@ use indextree::NodeId;
 use xmlparser::{ElementEnd, StrSpan, Token, Tokenizer};
 
 use crate::encoding::decode;
-use crate::entity::{parse_attribute, parse_text};
+use crate::entity::{normalize_line_ends, parse_attribute, parse_text};
 use crate::error::ParseError;
 use crate::id::{Name, NameId, PrefixId};
 use crate::xmlvalue::{Attribute, Comment, Element, Namespace, ProcessingInstruction, Text, Value};
@@ -220,10 +220,13 @@ impl DocumentBuilder {
     }
 
     fn cdata_text(&mut self, content: &str, xot: &mut Xot) -> Result<NodeId, ParseError> {
-        if let Some(last) = self.consolidate_text(content, xot) {
+        // a CDATA section has no references, but its line ends are
+        // normalized like everywhere else
+        let content = normalize_line_ends(content);
+        if let Some(last) = self.consolidate_text(&content, xot) {
             return Ok(last);
         }
-        Ok(self.add(Value::Text(Text::new(content.to_string())), xot))
+        Ok(self.add(Value::Text(Text::new(content.into_owned())), xot))
     }
 
     fn close_element_immediate(&mut self, xot: &mut Xot) -> NodeId {
@@ -264,7 +267,8 @@ impl DocumentBuilder {
     fn comment(&mut self, content: &str, xot: &mut Xot) -> Result<NodeId, ParseError> {
         // XXX are there illegal comments, like those with -- inside? or
         // won't they pass the parser?
-        Ok(self.add(Value::Comment(Comment::new(content.to_string())), xot))
+        let content = normalize_line_ends(content).into_owned();
+        Ok(self.add(Value::Comment(Comment::new(content)), xot))
     }
 
     fn processing_instruction(
@@ -279,7 +283,7 @@ impl DocumentBuilder {
         Ok(self.add(
             Value::ProcessingInstruction(ProcessingInstruction::new(
                 target,
-                content.map(|s| s.to_string()),
+                content.map(|s| normalize_line_ends(s).into_owned()),
             )),
             xot,
         ))

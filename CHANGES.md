@@ -99,6 +99,13 @@
   `UnsupportedEncoding` and `EncodingConflict` are byte offsets in the bytes
   given to `parse_bytes`, byte order mark included.
 
+- The parser left carriage returns in CDATA sections, comments and
+  processing instructions as they were. XML 1.0 (section 2.11) makes a
+  carriage return followed by a newline, and a carriage return that is not,
+  a newline everywhere in the document, as the parser already did in text
+  and attribute values. Spans and the positions in parse errors are still
+  positions in the source text.
+
 - `Xot::parse_bytes` replaced a byte sequence that is not valid in the
   encoding of the document by U+FFFD REPLACEMENT CHARACTER and parsed the
   result. The XML specification makes this a fatal error (section 4.3.3), so

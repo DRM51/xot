@@ -66,6 +66,18 @@ pub(crate) fn parse_text(content: Cow<str>, base_position: usize) -> Result<Cow<
     parse_content(content, false, base_position)
 }
 
+/// Normalize line ends in content without references, such as a CDATA
+/// section, a comment or a processing instruction, as XML 1.0 requires
+/// (<https://www.w3.org/TR/xml/#sec-line-ends>): a carriage return followed
+/// by a newline, and a carriage return that is not, become a newline.
+pub(crate) fn normalize_line_ends(content: &str) -> Cow<'_, str> {
+    if content.contains('\r') {
+        Cow::Owned(content.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(content)
+    }
+}
+
 pub(crate) fn parse_attribute(
     content: Cow<str>,
     base_position: usize,
@@ -375,6 +387,24 @@ mod tests {
     fn test_parse_newline_rn() {
         let text = "A \r\n B";
         assert_eq!(parse_text(text.into(), 0).unwrap(), "A \n B");
+    }
+
+    #[test]
+    fn test_normalize_line_ends() {
+        assert_eq!(
+            normalize_line_ends("a\u{D}\u{A}b\u{D}c\u{A}\u{D}d\u{D}\u{D}\u{A}e\u{D}"),
+            "a\u{A}b\u{A}c\u{A}\u{A}d\u{A}\u{A}e\u{A}"
+        );
+        // `&` is not a reference here
+        assert_eq!(normalize_line_ends("&amp;\u{D}"), "&amp;\u{A}");
+    }
+
+    #[test]
+    fn test_normalize_line_ends_without_carriage_return() {
+        let text = "a\u{A}b\u{9}c";
+        let result = normalize_line_ends(text);
+        // this is the same slice
+        assert!(std::ptr::eq(text, result.as_ref()));
     }
 
     #[test]

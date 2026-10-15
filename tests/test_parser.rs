@@ -387,6 +387,108 @@ fn test_span_for_cdata_cdata() {
 }
 
 #[test]
+fn test_parse_cdata_line_ends() {
+    // XML 1.0 section 2.11: a carriage return followed by a newline, and a
+    // carriage return that is not, become a newline, in a CDATA section too
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse("<a><![CDATA[x\u{D}\u{A}y\u{D}z\u{D}]]></a>")
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(doc_el), Some("x\u{A}y\u{A}z\u{A}"));
+}
+
+#[test]
+fn test_parse_cdata_line_ends_consolidated_with_text() {
+    // a carriage return at the end of text or of a CDATA section is not
+    // followed by the newline after the CDATA markup, so each becomes a
+    // newline of its own
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse("<a>x\u{D}<![CDATA[\u{D}y\u{D}]]>\u{A}z<![CDATA[\u{D}\u{A}]]></a>")
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.children(doc_el).count(), 1);
+    assert_eq!(
+        xot.text_content_str(doc_el),
+        Some("x\u{A}\u{A}y\u{A}\u{A}z\u{A}")
+    );
+}
+
+#[test]
+fn test_parse_comment_line_ends() {
+    let mut xot = Xot::new();
+    let doc = xot.parse("<a><!--x\u{D}\u{A}y\u{D}z--></a>").unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    let comment = xot.first_child(doc_el).unwrap();
+    assert_eq!(xot.comment_str(comment), Some("x\u{A}y\u{A}z"));
+}
+
+#[test]
+fn test_parse_processing_instruction_line_ends() {
+    let mut xot = Xot::new();
+    let doc = xot.parse("<a><?target x\u{D}\u{A}y\u{D}z?></a>").unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    let pi = xot.first_child(doc_el).unwrap();
+    assert_eq!(
+        xot.processing_instruction(pi).unwrap().data(),
+        Some("x\u{A}y\u{A}z")
+    );
+}
+
+#[test]
+fn test_span_for_cdata_with_line_ends() {
+    // spans are positions in the source, before line ends are normalized
+    let mut xot = Xot::new();
+    let (doc, span_info) = xot
+        .parse_with_span_info("<a><![CDATA[x\u{D}\u{A}y]]>z</a>")
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    let txt = xot.first_child(doc_el).unwrap();
+    assert_eq!(xot.text_str(txt), Some("x\u{A}yz"));
+    assert_eq!(
+        span_info.get(SpanInfoKey::Text(txt)).unwrap(),
+        &Span::new(12, 20)
+    );
+}
+
+#[test]
+fn test_span_for_comment_and_processing_instruction_with_line_ends() {
+    let mut xot = Xot::new();
+    let (doc, span_info) = xot
+        .parse_with_span_info("<a><!--x\u{D}\u{A}y--><?target x\u{D}\u{A}y?></a>")
+        .unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    let comment = xot.first_child(doc_el).unwrap();
+    let pi = xot.next_sibling(comment).unwrap();
+    assert_eq!(
+        span_info.get(SpanInfoKey::Comment(comment)).unwrap(),
+        &Span::new(7, 11)
+    );
+    assert_eq!(
+        span_info.get(SpanInfoKey::PiContent(pi)).unwrap(),
+        &Span::new(23, 27)
+    );
+}
+
+#[test]
+fn test_parse_error_after_cdata_with_line_ends() {
+    // the positions of errors after a CDATA section are in the source, and
+    // do not shift when line ends in the section are normalized
+    let mut xot = Xot::new();
+    let err = xot
+        .parse("<a><![CDATA[x\u{D}\u{A}y\u{D}\u{A}]]>&unknown;</a>")
+        .unwrap_err();
+    assert!(matches!(err, ParseError::InvalidEntity(_, _)));
+    assert_eq!(err.span(), Span::new(21, 30));
+    let err = xot
+        .parse("<a><![CDATA[\u{D}\u{A}\u{D}\u{A}]]></b>")
+        .unwrap_err();
+    assert!(matches!(err, ParseError::InvalidCloseTag(_, _, _)));
+    assert_eq!(err.span(), Span::new(21, 22));
+}
+
+#[test]
 fn test_parse_should_reject_multiple_elements_in_document() {
     let mut xot = Xot::new();
     let err = xot.parse(r#"<a/><b/>"#).unwrap_err();
