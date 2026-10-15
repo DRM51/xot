@@ -31,6 +31,9 @@
   member, `unescaped_cr`. Code that creates them with a full struct literal,
   without `..Default::default()`, no longer compiles.
 
+- `Error` has a new variant `InvalidCharacter`. XML serialization returns it
+  instead of writing a character that XML 1.0 does not allow (see below).
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -51,6 +54,17 @@
   are written as character references in both. Text in a CDATA section
   element is split into CDATA sections around these characters. HTML 5
   output is unchanged.
+
+- XML output wrote characters that XML 1.0 does not allow as they are, so
+  the output was not well-formed: the control characters #x1 to #x1F other
+  than tab, newline and carriage return, and #x0, #xFFFE and #xFFFF. XML 1.0
+  does not allow them as character references either. Serialization now
+  fails with `Error::InvalidCharacter` when one of them is in text, an
+  attribute value, a comment, a processing instruction or a namespace
+  declaration, as Serialization 3.1 requires (section 5.1.1, error
+  SERE0006). The error names the character, the node and where in the node
+  the character is. `Xot::tokens`, `Xot::pretty_tokens` and HTML 5 output
+  are unchanged.
 
 - `Xot::parse_bytes` could panic while determining the encoding: on input
   shorter than 4 bytes, on a UTF-32 byte order mark, on an encoding

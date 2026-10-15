@@ -1,4 +1,7 @@
+use std::borrow::Cow;
 use std::io;
+
+use xmlparser::XmlCharExt;
 
 use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
 use crate::error::Error;
@@ -76,12 +79,54 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
         node: Node,
         output: Output<'a>,
     ) -> Result<(), Error> {
+        self.check_characters(node, &output)?;
         let data = self.render_output(node, &output)?;
         if data.space {
             w.write_all(b" ")?;
         }
         w.write_all(data.text.as_bytes())?;
         Ok(())
+    }
+
+    /// Check that the output has only characters that XML 1.0 allows (the
+    /// `Char` production). Serialization 3.1
+    /// (<https://www.w3.org/TR/xslt-xquery-serialization-31/>, section 5.1.1)
+    /// makes any other character an error (SERE0006): it cannot be written
+    /// as it is, nor as a character reference.
+    fn check_characters(&self, node: Node, output: &Output<'a>) -> Result<(), Error> {
+        let value = match output {
+            Output::Text(text) | Output::Comment(text) => *text,
+            Output::Attribute(_, value) => *value,
+            Output::ProcessingInstruction(_, Some(data)) => *data,
+            Output::Prefix(_, namespace_id) => self.xot.namespace_str(*namespace_id),
+            _ => return Ok(()),
+        };
+        let Some(c) = value.chars().find(|c| !c.is_xml_char()) else {
+            return Ok(());
+        };
+        let place = match output {
+            Output::Attribute(name_id, _) => {
+                let name = self
+                    .fullname_serializer
+                    .attribute_fullname(*name_id)
+                    .unwrap_or(Cow::Borrowed(self.xot.local_name_str(*name_id)));
+                format!("attribute \"{}\"", name)
+            }
+            Output::Prefix(prefix_id, _) if *prefix_id == self.xot.empty_prefix_id => {
+                "namespace declaration \"xmlns\"".to_string()
+            }
+            Output::Prefix(prefix_id, _) => format!(
+                "namespace declaration \"xmlns:{}\"",
+                self.xot.prefix_str(*prefix_id)
+            ),
+            Output::Comment(_) => "comment".to_string(),
+            Output::ProcessingInstruction(target, _) => format!(
+                "processing instruction \"{}\"",
+                self.xot.local_name_str(*target)
+            ),
+            _ => "text".to_string(),
+        };
+        Err(Error::InvalidCharacter(c, node, place))
     }
 
     pub(crate) fn render_output(

@@ -21,6 +21,11 @@
 //!
 //! With [`Parameters::unescaped_cr`] a carriage return in text is written as
 //! it is.
+//!
+//! Output is XML 1.0. A character that XML 1.0 does not allow, such as a
+//! control character other than tab, newline and carriage return, cannot be
+//! written even as a character reference; serialization fails with
+//! [`Error::InvalidCharacter`](crate::Error::InvalidCharacter) instead.
 
 // This follows the rules
 // <https://www.w3.org/TR/xslt-xquery-serialization/#xml-output> but this API is

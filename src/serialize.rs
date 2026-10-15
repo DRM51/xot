@@ -159,6 +159,12 @@ impl Xot {
     /// add missing prefixes by invoking [`Xot::create_missing_prefixes`] before
     /// serialization to avoid this error.
     ///
+    /// The output is XML 1.0. If text, an attribute value, a comment, a
+    /// processing instruction or a namespace declaration has a character
+    /// that XML 1.0 does not allow, such as a control character other than
+    /// tab, newline and carriage return, this gives
+    /// [`Error::InvalidCharacter`].
+    ///
     /// With the default parameters:
     /// ```rust
     /// use xot::Xot;

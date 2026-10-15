@@ -178,6 +178,21 @@ pub enum Error {
     MissingPrefix(String),
     /// It's not allowed to serialize a processing instruction to HTML with a > in it.
     ProcessingInstructionGtInHtml(String),
+    /// A character that XML 1.0 does not allow would be in XML output.
+    ///
+    /// These are the characters that the `Char` production of XML 1.0 leaves
+    /// out: the control characters #x1 to #x1F other than tab, newline and
+    /// carriage return, and #x0, #xFFFE and #xFFFF. They are not allowed even
+    /// as character references, so output that contains them would not be
+    /// well-formed. This is serialization error SERE0006 of
+    /// [Serialization 3.1](https://www.w3.org/TR/xslt-xquery-serialization-31/),
+    /// section 5.1.1.
+    ///
+    /// This holds the character, the node where it is found and a
+    /// description of where it is, such as `attribute "a"`. The node is the
+    /// text, comment or processing instruction node, or for an attribute
+    /// value or a namespace declaration the element it is written on.
+    InvalidCharacter(char, Node, String),
 
     /// It's not allowed to include a namespace prefix in a processing instruction
     /// target name.
@@ -244,6 +259,12 @@ impl std::fmt::Display for Error {
             Error::ProcessingInstructionGtInHtml(s) => {
                 write!(f, "Processing instruction with > in HTML: {}", s)
             }
+            Error::InvalidCharacter(c, _, place) => write!(
+                f,
+                "Character U+{:04X} is not allowed in XML 1.0, found in {}",
+                u32::from(*c),
+                place
+            ),
             Error::NamespaceInProcessingInstruction => {
                 write!(f, "Namespace in processing instruction target")
             }
