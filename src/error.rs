@@ -48,9 +48,26 @@ pub enum ParseError {
     UnknownPrefix(String, Span),
     /// You declared an attribute of the same name twice.
     ///
+    /// This is also the error for two declarations of one prefix, or of the
+    /// default namespace, on one element, and for two attributes with the same
+    /// expanded name, that is the same local name in the same namespace, such
+    /// as `a:x` and `b:x` with `a` and `b` bound to one namespace (Namespaces
+    /// in XML 1.0, section 6.3).
+    ///
     /// This holds the name and the span of its second occurrence in the
     /// parsed text.
     DuplicateAttribute(String, Span),
+    /// A namespace declaration that Namespaces in XML 1.0 does not allow: a
+    /// declaration of the prefix `xmlns`; one that binds the prefix `xml` to
+    /// another namespace than `http://www.w3.org/XML/1998/namespace`, or
+    /// another prefix, or the default namespace, to that namespace; one that
+    /// binds a prefix, or the default namespace, to
+    /// `http://www.w3.org/2000/xmlns/`; and one that undeclares a prefix, such
+    /// as `xmlns:p=""`, which only XML 1.1 allows.
+    ///
+    /// This holds the name of the declaration, such as `xmlns:p`, the
+    /// namespace it declares, and the span of the name in the parsed text.
+    InvalidNamespaceDeclaration(String, String, Span),
     /// Unsupported XML version. Only 1.0 is supported.
     ///
     /// This holds the version and its span in the parsed text.
@@ -146,6 +163,7 @@ impl ParseError {
             ParseError::InvalidEntity(_, span) => *span,
             ParseError::UnknownPrefix(_, span) => *span,
             ParseError::DuplicateAttribute(_, span) => *span,
+            ParseError::InvalidNamespaceDeclaration(_, _, span) => *span,
             ParseError::UnsupportedVersion(_, span) => *span,
             ParseError::UnsupportedEncoding(_, span) => *span,
             ParseError::EncodingConflict(_, _, span) => *span,
@@ -209,6 +227,27 @@ pub enum Error {
     /// text, comment or processing instruction node, or for an attribute
     /// value or a namespace declaration the element it is written on.
     InvalidCharacter(char, Node, String),
+    /// An attribute that would read back as a namespace declaration in XML
+    /// output: one with the local name `xmlns` in no namespace, or one in the
+    /// namespace `http://www.w3.org/2000/xmlns/`, which Namespaces in XML 1.0
+    /// reserves for namespace declarations. The parser does not make such
+    /// attributes, but they can be made through the API.
+    ///
+    /// This holds the element and the local name of the attribute.
+    XmlnsAttribute(Node, String),
+    /// A namespace declaration that Namespaces in XML 1.0 does not allow in
+    /// XML output: one that undeclares a prefix, such as `xmlns:p=""`, which
+    /// only XML 1.1 can do (as for prefix undeclarations in XML 1.0 output,
+    /// Serialization 3.1 error SEPM0010); a declaration of the prefix
+    /// `xmlns`; one that binds the prefix `xml` to another namespace than
+    /// `http://www.w3.org/XML/1998/namespace`, or another prefix, or the
+    /// default namespace, to that namespace; and one that binds a prefix, or
+    /// the default namespace, to `http://www.w3.org/2000/xmlns/`. The parser
+    /// rejects these, but they can be made through the API.
+    ///
+    /// This holds the element the declaration would be written on, the name
+    /// of the declaration, such as `xmlns:p`, and the namespace it declares.
+    InvalidNamespaceDeclaration(Node, String, String),
 
     /// It's not allowed to include a namespace prefix in a processing instruction
     /// target name.
@@ -281,6 +320,16 @@ impl std::fmt::Display for Error {
                 u32::from(*c),
                 place
             ),
+            Error::XmlnsAttribute(_, name) => write!(
+                f,
+                "Attribute {} would read back as a namespace declaration",
+                name
+            ),
+            Error::InvalidNamespaceDeclaration(_, name, namespace) => write!(
+                f,
+                "Invalid namespace declaration: {}=\"{}\"",
+                name, namespace
+            ),
             Error::NamespaceInProcessingInstruction => {
                 write!(f, "Namespace in processing instruction target")
             }
@@ -304,6 +353,11 @@ impl std::fmt::Display for ParseError {
             ParseError::InvalidEntity(s, _) => write!(f, "Invalid entity: {}", s),
             ParseError::UnknownPrefix(s, _) => write!(f, "Unknown prefix: {}", s),
             ParseError::DuplicateAttribute(s, _) => write!(f, "Duplicate attribute: {}", s),
+            ParseError::InvalidNamespaceDeclaration(name, namespace, _) => write!(
+                f,
+                "Invalid namespace declaration: {}=\"{}\"",
+                name, namespace
+            ),
             ParseError::UnsupportedVersion(s, _) => write!(f, "Unsupported version: {}", s),
             ParseError::UnsupportedEncoding(s, _) => write!(f, "Unsupported encoding: {}", s),
             ParseError::EncodingConflict(declared, found, _) if declared.is_empty() => write!(

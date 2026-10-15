@@ -1013,3 +1013,38 @@ fn test_parse_prefixed_xmlns_duplicate() {
     assert!(matches!(err, ParseError::DuplicateAttribute(ref name, _) if name == "p:xmlns"));
     assert_eq!(err.span(), Span::new(31, 38));
 }
+
+#[test]
+fn test_parse_allowed_namespace_declarations() {
+    // `xml` may be declared for its own namespace, and the default namespace
+    // may be undeclared
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(concat!(
+            r#"<a xmlns="urn:d" xmlns:xml="http://www.w3.org/XML/1998/namespace">"#,
+            r#"<b xmlns="" xml:lang="en"/></a>"#
+        ))
+        .unwrap();
+    let a = xot.document_element(doc).unwrap();
+    let b = xot.first_child(a).unwrap();
+    assert_eq!(xot.name_ns_str(xot.element(b).unwrap().name()), ("b", ""));
+    let lang = xot.name_ns("lang", xot.xml_namespace()).unwrap();
+    assert_eq!(xot.get_attribute(b, lang), Some("en"));
+}
+
+#[test]
+fn test_parse_same_local_name_in_default_namespace() {
+    // an unprefixed attribute is in no namespace, so it does not have the
+    // same expanded name as a prefixed one (Namespaces in XML 1.0, section
+    // 6.3)
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(concat!(
+            r#"<x xmlns:n1="http://www.w3.org" xmlns="http://www.w3.org">"#,
+            r#"<good a="1" n1:a="2"/></x>"#
+        ))
+        .unwrap();
+    let x = xot.document_element(doc).unwrap();
+    let good = xot.first_child(x).unwrap();
+    assert_eq!(xot.attributes(good).len(), 2);
+}

@@ -427,14 +427,15 @@ fn test_namespaces_overrides() {
 #[test]
 fn test_namespaces_overrides_xml_prefix() {
     let mut xot = Xot::new();
-    let doc = xot
-        .parse(r#"<doc><p xmlns:xml="http://example.com/a"/></doc>"#)
-        .unwrap();
+    let doc = xot.parse(r#"<doc><p/></doc>"#).unwrap();
     let root_id = xot.document_element(doc).unwrap();
     let a_ns = xot.add_namespace("http://example.com/a");
     let xml_prefix = xot.add_prefix("xml");
     let xml_ns = xot.add_namespace("http://www.w3.org/XML/1998/namespace");
     let p0 = xot.first_child(root_id).unwrap();
+    // Namespaces in XML 1.0 does not allow `xmlns:xml="http://example.com/a"`,
+    // so the parser rejects it, but it can be made through the API
+    xot.set_namespace(p0, xml_prefix, a_ns);
 
     assert_eq!(
         xot.namespaces_in_scope(p0).collect::<Vec<_>>(),

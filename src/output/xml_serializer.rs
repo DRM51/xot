@@ -7,7 +7,8 @@ use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escape
 use crate::error::Error;
 use crate::id::NameId;
 use crate::output::{NoopNormalizer, Normalizer};
-use crate::xotdata::{Node, Xot};
+use crate::parse::is_allowed_declaration;
+use crate::xotdata::{Node, Xot, XMLNS_NAMESPACE};
 
 use super::fullname::FullnameSerializer;
 use super::{Output, OutputToken, Pretty, TokenSerializeParameters};
@@ -80,6 +81,8 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
         output: Output<'a>,
     ) -> Result<(), Error> {
         self.check_characters(node, &output)?;
+        self.check_attribute_name(node, &output)?;
+        self.check_namespace_declaration(node, &output)?;
         let data = self.render_output(node, &output)?;
         if data.space {
             w.write_all(b" ")?;
@@ -127,6 +130,47 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
             _ => "text".to_string(),
         };
         Err(Error::InvalidCharacter(c, node, place))
+    }
+
+    /// Check that an attribute would not read back as a namespace
+    /// declaration (https://www.w3.org/TR/xml-names/#ns-decl): the attribute
+    /// `xmlns` in no namespace would declare the default namespace, and an
+    /// attribute in the namespace of the `xmlns` prefix cannot be written
+    /// without declaring a prefix for that namespace, which is not allowed.
+    fn check_attribute_name(&self, node: Node, output: &Output<'a>) -> Result<(), Error> {
+        if let Output::Attribute(name_id, _) = output {
+            let (local_name, namespace) = self.xot.name_ns_str(*name_id);
+            if namespace == XMLNS_NAMESPACE || (namespace.is_empty() && local_name == "xmlns") {
+                return Err(Error::XmlnsAttribute(node, local_name.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Check that a namespace declaration is one that Namespaces in XML 1.0
+    /// allows, as the parser does (https://www.w3.org/TR/xml-names/#xmlReserved
+    /// and https://www.w3.org/TR/xml-names/#nsc-NoPrefixUndecl): a prefix
+    /// cannot be undeclared, and the prefixes `xml` and `xmlns` and their
+    /// namespaces are reserved. The prefix `xml` bound to its own namespace
+    /// is allowed; it is not written.
+    fn check_namespace_declaration(&self, node: Node, output: &Output<'a>) -> Result<(), Error> {
+        if let Output::Prefix(prefix_id, namespace_id) = output {
+            let prefix = self.xot.prefix_str(*prefix_id);
+            let namespace = self.xot.namespace_str(*namespace_id);
+            if !is_allowed_declaration(prefix, namespace) {
+                let name = if prefix.is_empty() {
+                    "xmlns".to_string()
+                } else {
+                    format!("xmlns:{}", prefix)
+                };
+                return Err(Error::InvalidNamespaceDeclaration(
+                    node,
+                    name,
+                    namespace.to_string(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn render_output(

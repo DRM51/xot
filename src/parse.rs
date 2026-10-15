@@ -7,7 +7,7 @@ use crate::entity::{normalize_line_ends, parse_attribute, parse_text};
 use crate::error::ParseError;
 use crate::id::{Name, NameId, PrefixId};
 use crate::xmlvalue::{Attribute, Comment, Element, Namespace, ProcessingInstruction, Text, Value};
-use crate::xotdata::{Node, Xot};
+use crate::xotdata::{Node, Xot, XMLNS_NAMESPACE, XML_NAMESPACE};
 use crate::NamespaceId;
 
 type Namespaces = Vec<(PrefixId, NamespaceId)>;
@@ -74,23 +74,40 @@ impl DocumentBuilder {
         self.element_builder = Some(ElementBuilder::new(prefix, name));
     }
 
+    /// A namespace declaration: the attribute `xmlns` declares the default
+    /// namespace, and the attribute `xmlns:p` the prefix `p`.
     fn prefix(
         &mut self,
-        prefix: &str,
+        prefix: StrSpan<'_>,
+        local: StrSpan<'_>,
         value: StrSpan<'_>,
         xot: &mut Xot,
     ) -> Result<(), ParseError> {
+        let (declared, name) = if prefix.is_empty() {
+            ("", "xmlns".to_string())
+        } else {
+            (local.as_str(), format!("xmlns:{}", local))
+        };
+        let span = Span::from_prefix_name(prefix, local);
         // the namespace name is the normalized value of the namespace
         // declaration attribute, with its references expanded like in any
         // other attribute value (https://www.w3.org/TR/xml-names/#ns-decl)
         let namespace_uri = parse_attribute(value.as_str().into(), value.start())?;
-        let prefix_id = xot.prefix_lookup.get_id_mut(prefix);
+        let prefix_id = xot.prefix_lookup.get_id_mut(declared);
+        let namespaces = &mut self.element_builder.as_mut().unwrap().namespaces;
+        // like any attribute, a declaration can be on an element only once
+        if namespaces.iter().any(|(p, _)| *p == prefix_id) {
+            return Err(ParseError::DuplicateAttribute(name, span));
+        }
+        if !is_allowed_declaration(declared, &namespace_uri) {
+            return Err(ParseError::InvalidNamespaceDeclaration(
+                name,
+                namespace_uri.into_owned(),
+                span,
+            ));
+        }
         let namespace_id = xot.namespace_lookup.get_id_mut(namespace_uri.as_ref());
-        self.element_builder
-            .as_mut()
-            .unwrap()
-            .namespaces
-            .push((prefix_id, namespace_id));
+        namespaces.push((prefix_id, namespace_id));
         Ok(())
     }
 
@@ -168,7 +185,7 @@ impl DocumentBuilder {
             self.current_node_id.append(namespace_node, &mut xot.arena);
         }
         // add attribute nodes
-        let mut attribute_spans = Vec::new();
+        let mut attribute_spans: AttributeSpans = Vec::new();
         for attribute_builder in element_builder.attributes {
             let name_id = self.name_id_builder.attribute_name_id(
                 &attribute_builder.prefix,
@@ -176,6 +193,19 @@ impl DocumentBuilder {
                 attribute_builder.prefix_span,
                 xot,
             )?;
+            // two attributes cannot have the same expanded name, even with
+            // different prefixes (https://www.w3.org/TR/xml-names/#uniqAttrs)
+            if attribute_spans.iter().any(|(seen, _, _)| *seen == name_id) {
+                let name = if attribute_builder.prefix.is_empty() {
+                    attribute_builder.name
+                } else {
+                    format!("{}:{}", attribute_builder.prefix, attribute_builder.name)
+                };
+                return Err(ParseError::DuplicateAttribute(
+                    name,
+                    attribute_builder.name_span,
+                ));
+            }
             // if we see xml:id, check that they aren't a duplicate
             // and keep track of all node ids that have an xml:id
             if name_id == self.xml_id_id {
@@ -693,10 +723,10 @@ impl Xot {
                         // only `xmlns` and `xmlns:NCName` declare namespaces
                         // (https://www.w3.org/TR/xml-names/#ns-decl);
                         // `p:xmlns` is an attribute like any other
-                        if prefix.as_str() == "xmlns" {
-                            builder.prefix(local.as_str(), value, self)?;
-                        } else if prefix.is_empty() && local.as_str() == "xmlns" {
-                            builder.prefix("", value, self)?;
+                        if prefix.as_str() == "xmlns"
+                            || (prefix.is_empty() && local.as_str() == "xmlns")
+                        {
+                            builder.prefix(prefix, local, value, self)?;
                         } else {
                             builder.attribute(prefix, local, value)?;
                         }
@@ -895,6 +925,25 @@ impl Xot {
     pub fn parse_bytes(&mut self, bytes: &[u8]) -> Result<Node, ParseError> {
         let xml = decode(bytes)?;
         self.parse(&xml)
+    }
+}
+
+/// Whether Namespaces in XML 1.0 allows a declaration of `prefix`, or of the
+/// default namespace if it is empty, for `namespace`
+/// (https://www.w3.org/TR/xml-names/#xmlReserved): the prefix `xmlns` cannot
+/// be declared; the prefix `xml` can only be bound to its own namespace, and
+/// no other prefix, nor the default namespace, to that namespace or to the
+/// namespace of `xmlns`; and only the default namespace can be undeclared
+/// (https://www.w3.org/TR/xml-names/#nsc-NoPrefixUndecl).
+pub(crate) fn is_allowed_declaration(prefix: &str, namespace: &str) -> bool {
+    match prefix {
+        "xmlns" => false,
+        "xml" => namespace == XML_NAMESPACE,
+        _ => {
+            namespace != XML_NAMESPACE
+                && namespace != XMLNS_NAMESPACE
+                && (prefix.is_empty() || !namespace.is_empty())
+        }
     }
 }
 

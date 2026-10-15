@@ -447,3 +447,142 @@ fn test_parse_bytes_invalid_byte_sequence_utf16() {
     assert!(matches!(err, xot::ParseError::InvalidByteSequence(ref name, _) if name == "UTF-16LE"));
     assert_eq!(err.span(), (12..14).into());
 }
+
+// Namespaces in XML 1.0, sections 3 and 6.3: namespace declarations and
+// attribute names that a namespace-well-formed document cannot have
+
+/// The error of parsing `xml`, which must not be namespace-well-formed.
+fn parse_error(xml: &str) -> xot::ParseError {
+    let mut xot = Xot::new();
+    xot.parse(xml).unwrap_err()
+}
+
+#[test]
+fn test_duplicate_namespace_declaration() {
+    // like any attribute, a namespace declaration can be on an element only
+    // once, whether or not it declares the same namespace again
+    let err = parse_error(r#"<a xmlns:p="urn:a" xmlns:p="urn:b"/>"#);
+    assert!(matches!(err, xot::ParseError::DuplicateAttribute(ref name, _) if name == "xmlns:p"));
+    assert_eq!(err.span(), (19..26).into());
+    let err = parse_error(r#"<a xmlns:p="urn:a" xmlns:p="urn:a"/>"#);
+    assert!(matches!(err, xot::ParseError::DuplicateAttribute(ref name, _) if name == "xmlns:p"));
+    let err = parse_error(r#"<a xmlns="urn:a" xmlns="urn:b"/>"#);
+    assert!(matches!(err, xot::ParseError::DuplicateAttribute(ref name, _) if name == "xmlns"));
+    assert_eq!(err.span(), (17..22).into());
+}
+
+/// The name, namespace and span of the `InvalidNamespaceDeclaration` of
+/// parsing `xml`.
+fn invalid_declaration(xml: &str) -> (String, String, xot::Span) {
+    match parse_error(xml) {
+        xot::ParseError::InvalidNamespaceDeclaration(name, namespace, span) => {
+            (name, namespace, span)
+        }
+        other => panic!(
+            "{}: expected InvalidNamespaceDeclaration, got {:?}",
+            xml, other
+        ),
+    }
+}
+
+#[test]
+fn test_undeclare_prefix() {
+    // XML 1.0 namespaces cannot undeclare a prefix
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns:p=""/>"#),
+        ("xmlns:p".to_string(), String::new(), (3..10).into())
+    );
+    let err = parse_error(r#"<a xmlns:p=""/>"#);
+    assert_eq!(
+        err.to_string(),
+        r#"Invalid namespace declaration: xmlns:p="""#
+    );
+}
+
+#[test]
+fn test_declare_xml_prefix() {
+    // `xml` can only be bound to its own namespace
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns:xml="urn:x"/>"#),
+        ("xmlns:xml".to_string(), "urn:x".to_string(), (3..12).into())
+    );
+    assert_eq!(invalid_declaration(r#"<a xmlns:xml=""/>"#).0, "xmlns:xml");
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns:xml="http://www.w3.org/2000/xmlns/"/>"#).0,
+        "xmlns:xml"
+    );
+}
+
+#[test]
+fn test_declare_xmlns_prefix() {
+    // `xmlns` cannot be declared at all, not even for its own namespace
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns:xmlns="urn:x"/>"#),
+        (
+            "xmlns:xmlns".to_string(),
+            "urn:x".to_string(),
+            (3..14).into()
+        )
+    );
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns:xmlns="http://www.w3.org/2000/xmlns/"/>"#).0,
+        "xmlns:xmlns"
+    );
+}
+
+#[test]
+fn test_bind_xml_namespace() {
+    // no other prefix, nor the default namespace, can be bound to the
+    // namespace of `xml`
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns:p="http://www.w3.org/XML/1998/namespace"/>"#),
+        (
+            "xmlns:p".to_string(),
+            "http://www.w3.org/XML/1998/namespace".to_string(),
+            (3..10).into()
+        )
+    );
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns="http://www.w3.org/XML/1998/namespace"/>"#),
+        (
+            "xmlns".to_string(),
+            "http://www.w3.org/XML/1998/namespace".to_string(),
+            (3..8).into()
+        )
+    );
+}
+
+#[test]
+fn test_bind_xmlns_namespace() {
+    // no prefix, nor the default namespace, can be bound to the namespace of
+    // `xmlns`
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns:p="http://www.w3.org/2000/xmlns/"/>"#).0,
+        "xmlns:p"
+    );
+    assert_eq!(
+        invalid_declaration(r#"<a xmlns="http://www.w3.org/2000/xmlns/"/>"#).0,
+        "xmlns"
+    );
+    // the namespace is the value after references are expanded
+    assert_eq!(
+        invalid_declaration(r#"<a><b xmlns:p="http://www.w3.org/2000/xmlns&#x2F;"/></a>"#),
+        (
+            "xmlns:p".to_string(),
+            "http://www.w3.org/2000/xmlns/".to_string(),
+            (6..13).into()
+        )
+    );
+}
+
+#[test]
+fn test_duplicate_expanded_attribute_name() {
+    // two attributes with the same local name and prefixes bound to the same
+    // namespace (the example of Namespaces in XML 1.0, section 6.3)
+    let err = parse_error(concat!(
+        r#"<x xmlns:n1="http://www.w3.org" xmlns:n2="http://www.w3.org">"#,
+        r#"<bad n1:a="1" n2:a="2"/></x>"#
+    ));
+    assert!(matches!(err, xot::ParseError::DuplicateAttribute(ref name, _) if name == "n2:a"));
+    assert_eq!(err.span(), (75..79).into());
+}

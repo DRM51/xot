@@ -1,6 +1,6 @@
 use std::io;
 
-use xot::{output, Error, Xot};
+use xot::{output, Error, Node, Xot};
 
 #[test]
 fn test_serialize_node() {
@@ -468,5 +468,168 @@ fn test_html5_prefixed_xmlns_attribute() {
     assert_eq!(
         xot.html5().to_string(doc).unwrap(),
         r#"<!DOCTYPE html><html><body xmlns:p="urn:p" p:xmlns="urn:v"></body></html>"#
+    );
+}
+
+#[test]
+fn test_serialize_unprefixed_xmlns_attribute() {
+    // made through the API: written as `xmlns="..."`, this attribute would
+    // read back as a default namespace declaration
+    let mut xot = Xot::new();
+    let a_name = xot.add_name("a");
+    let xmlns = xot.add_name("xmlns");
+    let a = xot.new_element(a_name);
+    xot.set_attribute(a, xmlns, "urn:v");
+    let doc = xot.new_document_with_element(a).unwrap();
+    let err = xot.to_string(doc).unwrap_err();
+    assert!(matches!(err, Error::XmlnsAttribute(node, ref name) if node == a && name == "xmlns"));
+    assert_eq!(
+        err.to_string(),
+        "Attribute xmlns would read back as a namespace declaration"
+    );
+}
+
+#[test]
+fn test_serialize_attribute_in_xmlns_namespace() {
+    // made through the API: an attribute in the namespace of `xmlns` cannot
+    // be written, as no prefix can be declared for that namespace, nor can
+    // `xmlns` itself
+    let mut xot = Xot::new();
+    let ns = xot.add_namespace("http://www.w3.org/2000/xmlns/");
+    let a_name = xot.add_name("a");
+    let p = xot.add_name_ns("p", ns);
+    let a = xot.new_element(a_name);
+    xot.set_attribute(a, p, "urn:v");
+    let doc = xot.new_document_with_element(a).unwrap();
+    assert!(matches!(
+        xot.to_string(doc),
+        Err(Error::XmlnsAttribute(node, ref name)) if node == a && name == "p"
+    ));
+    // a prefix bound to the namespace is not written either
+    let xmlns_prefix = xot.add_prefix("xmlns");
+    xot.set_namespace(a, xmlns_prefix, ns);
+    assert!(matches!(
+        xot.to_string(doc),
+        Err(Error::InvalidNamespaceDeclaration(node, ref name, _))
+            if node == a && name == "xmlns:xmlns"
+    ));
+}
+
+const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
+
+/// A document with an element `a` that declares `prefix` for `namespace`
+/// and has a child `b`, both in `namespace`, made through the API; and `a`.
+fn document_with_declaration(xot: &mut Xot, prefix: &str, namespace: &str) -> (Node, Node) {
+    let prefix = xot.add_prefix(prefix);
+    let ns = xot.add_namespace(namespace);
+    let a_name = xot.add_name_ns("a", ns);
+    let b_name = xot.add_name_ns("b", ns);
+    let a = xot.new_element(a_name);
+    xot.set_namespace(a, prefix, ns);
+    xot.append_element(a, b_name).unwrap();
+    let doc = xot.new_document_with_element(a).unwrap();
+    (doc, a)
+}
+
+#[test]
+fn test_serialize_invalid_namespace_declaration() {
+    // made through the API: the namespace declarations that Namespaces in
+    // XML 1.0 does not allow, which the parser rejects, are not written
+    for (prefix, namespace, name) in [
+        // only XML 1.1 can undeclare a prefix
+        ("p", "", "xmlns:p"),
+        ("xml", "", "xmlns:xml"),
+        ("xmlns", "", "xmlns:xmlns"),
+        // `xml` is bound to its namespace, and no other prefix is
+        ("xml", "urn:x", "xmlns:xml"),
+        ("p", XML_NAMESPACE, "xmlns:p"),
+        ("", XML_NAMESPACE, "xmlns"),
+        // `xmlns` cannot be declared, and its namespace cannot be bound
+        ("xmlns", "urn:x", "xmlns:xmlns"),
+        ("xmlns", XMLNS_NAMESPACE, "xmlns:xmlns"),
+        ("p", XMLNS_NAMESPACE, "xmlns:p"),
+        ("", XMLNS_NAMESPACE, "xmlns"),
+    ] {
+        let mut xot = Xot::new();
+        let (doc, a) = document_with_declaration(&mut xot, prefix, namespace);
+        let err = xot.to_string(doc).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::InvalidNamespaceDeclaration(node, ref n, ref ns)
+                    if node == a && n == name && ns == namespace
+            ),
+            "{}=\"{}\": {:?}",
+            name,
+            namespace,
+            err
+        );
+    }
+    let mut xot = Xot::new();
+    let (doc, a) = document_with_declaration(&mut xot, "p", "");
+    assert_eq!(
+        xot.to_string(doc).unwrap_err().to_string(),
+        "Invalid namespace declaration: xmlns:p=\"\""
+    );
+    // also when the declaration is in scope of a node serialized on its own
+    let b = xot.first_child(a).unwrap();
+    assert!(matches!(
+        xot.to_string(b),
+        Err(Error::InvalidNamespaceDeclaration(node, ref name, _)) if node == b && name == "xmlns:p"
+    ));
+}
+
+#[test]
+fn test_serialize_namespace_declaration_round_trip() {
+    // whatever namespace declaration is made through the API, XML output
+    // either fails or reads back with the same declaration and names
+    let mut serialized = Vec::new();
+    for prefix in ["", "p", "xml", "xmlns"] {
+        for namespace in ["", "urn:x", XML_NAMESPACE, XMLNS_NAMESPACE] {
+            let mut xot = Xot::new();
+            let (doc, a) = document_with_declaration(&mut xot, prefix, namespace);
+            let xml = match xot.to_string(doc) {
+                Ok(xml) => xml,
+                Err(err) => {
+                    assert!(
+                        matches!(err, Error::InvalidNamespaceDeclaration(..)),
+                        "{}={:?}: {:?}",
+                        prefix,
+                        namespace,
+                        err
+                    );
+                    continue;
+                }
+            };
+            let doc2 = xot
+                .parse(&xml)
+                .unwrap_or_else(|err| panic!("{}: {}", xml, err));
+            let a2 = xot.document_element(doc2).unwrap();
+            let names = |xot: &Xot, a: Node| {
+                let b = xot.first_child(a).unwrap();
+                (xot.node_name(a), xot.node_name(b))
+            };
+            assert_eq!(names(&xot, a2), names(&xot, a), "{}", xml);
+            let declarations = |xot: &Xot, a: Node| {
+                xot.namespaces(a)
+                    .iter()
+                    // `xml` is bound without a declaration
+                    .filter(|(prefix, _)| *prefix != xot.xml_prefix())
+                    .map(|(prefix, ns)| (prefix, *ns))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(declarations(&xot, a2), declarations(&xot, a), "{}", xml);
+            serialized.push(xml);
+        }
+    }
+    assert_eq!(
+        serialized,
+        [
+            r#"<a xmlns=""><b/></a>"#,
+            r#"<a xmlns="urn:x"><b/></a>"#,
+            r#"<p:a xmlns:p="urn:x"><p:b/></p:a>"#,
+            r#"<xml:a><xml:b/></xml:a>"#,
+        ]
     );
 }

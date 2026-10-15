@@ -58,6 +58,13 @@
   not as a default namespace declaration (see below), so an undeclared
   prefix there is now a parse error.
 
+- `ParseError` has a new variant `InvalidNamespaceDeclaration`, and `Error`
+  new variants `XmlnsAttribute` and `InvalidNamespaceDeclaration`. The
+  parser rejects namespace declarations and attributes that Namespaces in
+  XML 1.0 does not allow, and XML serialization rejects such a namespace
+  declaration and an attribute that would read back as a namespace
+  declaration (see below).
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -206,6 +213,41 @@
   declarations that bind them: those of the outermost ancestor first, and
   those of one element in the order they are declared. Thanks to Frank
   Arensmeier for the fix that made the order the same in every run!
+
+- The parser accepted namespace declarations that Namespaces in XML 1.0
+  does not allow: two declarations of one prefix, or of the default
+  namespace, on one element; a declaration that undeclares a prefix, such
+  as `xmlns:p=""`, which only XML 1.1 allows; a declaration of the prefix
+  `xmlns`; a declaration that binds `xml` to another namespace than
+  `http://www.w3.org/XML/1998/namespace`, or another prefix, or the default
+  namespace, to that namespace; and a declaration that binds a prefix, or
+  the default namespace, to `http://www.w3.org/2000/xmlns/`. It also
+  accepted two attributes with the same expanded name, such as `a:x` and
+  `b:x` with `a` and `b` bound to one namespace (section 6.3). Each of these
+  is now a parse error with the span of the name of the declaration or of
+  the second attribute: `ParseError::DuplicateAttribute` for the duplicates,
+  and the new `ParseError::InvalidNamespaceDeclaration` for the others. The
+  generator of the `proptest` feature no longer makes such declarations.
+
+- XML serialization wrote an attribute made through the API that reads back
+  as a namespace declaration: an attribute with the local name `xmlns` in no
+  namespace became a default namespace declaration, and an attribute in the
+  namespace `http://www.w3.org/2000/xmlns/` needed a prefix for that
+  namespace, which cannot be declared. Serialization now fails with the new
+  `Error::XmlnsAttribute` instead. `Xot::tokens`, `Xot::pretty_tokens` and
+  HTML 5 output are unchanged.
+
+- XML serialization wrote the namespace declarations made through the API
+  that the parser now rejects (see above): a declaration that undeclares a
+  prefix, such as `xmlns:p=""`, which XML 1.0 output cannot have
+  (Serialization 3.1, error SEPM0010); a declaration of the prefix `xmlns`;
+  one that binds `xml` to another namespace than its own; and one that binds
+  another prefix, or the default namespace, to the namespace of `xml` or of
+  `xmlns`. Such a declaration for the namespace of `xml` was left out, so
+  that the names that used it read back in another namespace or not at all.
+  Serialization now fails with the new `Error::InvalidNamespaceDeclaration`
+  instead. `Xot::tokens`, `Xot::pretty_tokens` and HTML 5 output are
+  unchanged.
 
 ## [0.31.2] - 2025-04-09
 

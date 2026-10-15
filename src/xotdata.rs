@@ -6,6 +6,12 @@ use crate::xmlvalue::Value;
 
 pub(crate) type XmlArena = Arena<Value>;
 
+/// The namespace that the prefix `xml` is bound to.
+pub(crate) const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+/// The namespace that the prefix `xmlns` is bound to, which Namespaces in
+/// XML 1.0 reserves for namespace declarations.
+pub(crate) const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
+
 /// A node in the XML tree.
 /// This is a lightweight value and can be copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,7 +76,7 @@ impl Xot {
         let no_namespace_id = namespace_lookup.get_id_mut("");
         let mut prefix_lookup = PrefixLookup::new();
         let empty_prefix_id = prefix_lookup.get_id_mut("");
-        let xml_namespace_id = namespace_lookup.get_id_mut("http://www.w3.org/XML/1998/namespace");
+        let xml_namespace_id = namespace_lookup.get_id_mut(XML_NAMESPACE);
         let xml_prefix_id = prefix_lookup.get_id_mut("xml");
         let mut name_lookup = NameLookup::new();
         let xml_space_id = name_lookup.get_id_mut(&Name::new("space", xml_namespace_id));

@@ -49,6 +49,11 @@ fn arb_prefix() -> impl Strategy<Value = fixed::Prefix> {
         prop::sample::select(PREFIXES),
         prop::sample::select(NAMESPACES),
     )
+        // Namespaces in XML 1.0 allows only the default namespace to be
+        // undeclared
+        .prop_filter("a prefix cannot be undeclared", |(prefix, namespace)| {
+            prefix.is_empty() || !namespace.is_empty()
+        })
         .prop_map(|(prefix, namespace)| fixed::Prefix {
             name: prefix.to_string(),
             namespace: namespace.to_string(),
