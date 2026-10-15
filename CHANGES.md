@@ -89,6 +89,13 @@
 - A writer that fails during serialization now gives `Error::Io` instead of a
   panic.
 
+- `Xot::clone_with_prefixes` added the namespace declarations it needs from
+  outer scope in an order that varied from one run to the next, as it took
+  them from a hash map. It now adds them in the document order of the
+  declarations that bind them: those of the outermost ancestor first, and
+  those of one element in the order they are declared. Thanks to Frank
+  Arensmeier for the fix that made the order the same in every run!
+
 ## [0.31.2] - 2025-04-09
 
 ### Bugs fixed

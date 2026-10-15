@@ -669,20 +669,15 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn clone_with_prefixes(&mut self, node: Node) -> Node {
-        // get all prefixes defined in scope
-        let prefixes = self.inherited_prefixes(node);
+        // the declarations from outer scope that the node needs, in document
+        // order
+        let declarations = self.inherited_declarations(node);
 
         let clone = self.clone_node(node);
         // add any prefixes from outer scope we may need
         if self.is_element(clone) {
-            // Sort by prefix id for deterministic namespace node ordering.
-            // inherited_prefixes() returns an AHashMap whose iteration order
-            // varies across runs due to random seeding.
-            let mut sorted_prefixes: Vec<_> = prefixes.into_iter().collect();
-            sorted_prefixes.sort_by_key(|(prefix, _)| *prefix);
-
             let mut namespaces = self.namespaces_mut(clone);
-            for (prefix, ns) in sorted_prefixes {
+            for (prefix, ns) in declarations {
                 if namespaces.contains_key(prefix) {
                     continue;
                 }
@@ -690,6 +685,53 @@ impl Xot {
             }
         }
         clone
+    }
+
+    /// The namespace declarations from outer scope that `node` needs, as
+    /// [`Xot::inherited_prefixes`] finds them, in the document order of the
+    /// declarations that bind them: those on the outermost ancestor first,
+    /// and those on one element in the order they are declared. A prefix
+    /// that is bound without a declaration, as `xml` is, comes first.
+    ///
+    /// The order does not depend on the order in which the prefixes were
+    /// added to this `Xot`, nor on the order of a hash map.
+    fn inherited_declarations(&self, node: Node) -> Vec<(PrefixId, NamespaceId)> {
+        let needed = self.inherited_prefixes(node);
+        // a prefix is bound by the declaration on the innermost ancestor that
+        // declares it, so go from the parent outward
+        let mut seen = Vec::new();
+        let mut declarations = Vec::new();
+        if let Some(parent) = self.parent(node) {
+            let ancestors: Vec<Node> = self.ancestors(parent).collect();
+            for (depth, ancestor) in ancestors.iter().enumerate() {
+                for (index, (prefix, ns)) in self.namespaces(*ancestor).iter().enumerate() {
+                    if seen.contains(&prefix) {
+                        continue;
+                    }
+                    seen.push(prefix);
+                    if needed.contains_key(&prefix) {
+                        // the level from the root, which is the last ancestor
+                        let level = ancestors.len() - depth;
+                        declarations.push((level, index, prefix, *ns));
+                    }
+                }
+            }
+        }
+        declarations.sort_by_key(|(level, index, _, _)| (*level, *index));
+        let mut implicit: Vec<_> = self
+            .base_prefixes()
+            .into_iter()
+            .filter(|(prefix, _)| !seen.contains(prefix) && needed.contains_key(prefix))
+            .collect();
+        implicit.sort_by_key(|(prefix, _)| *prefix);
+        implicit
+            .into_iter()
+            .chain(
+                declarations
+                    .into_iter()
+                    .map(|(_, _, prefix, ns)| (prefix, ns)),
+            )
+            .collect()
     }
 
     // removes a node and puts normal content into containing node.

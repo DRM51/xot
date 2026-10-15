@@ -603,6 +603,148 @@ fn test_clone_with_prefixes_only_necessary_ones() {
 }
 
 #[test]
+fn test_clone_with_prefixes_namespace_order() {
+    // the prefixes from outer scope are added in the order they are declared
+    let mut xot = Xot::new();
+    let root = xot
+        .parse(concat!(
+            r#"<doc xmlns:a1="http://example.com/1" xmlns:a2="http://example.com/2" "#,
+            r#"xmlns:a3="http://example.com/3" xmlns:a4="http://example.com/4" "#,
+            r#"xmlns:a5="http://example.com/5" xmlns:a6="http://example.com/6" "#,
+            r#"xmlns:a7="http://example.com/7" xmlns:a8="http://example.com/8">"#,
+            r#"<a1:x a2:x="" a3:x="" a4:x="" a5:x="" a6:x="" a7:x="" a8:x=""/></doc>"#
+        ))
+        .unwrap();
+    let doc_id = xot.document_element(root).unwrap();
+    let x_id = xot.first_child(doc_id).unwrap();
+    let expected = concat!(
+        r#"<a1:x xmlns:a1="http://example.com/1" xmlns:a2="http://example.com/2" "#,
+        r#"xmlns:a3="http://example.com/3" xmlns:a4="http://example.com/4" "#,
+        r#"xmlns:a5="http://example.com/5" xmlns:a6="http://example.com/6" "#,
+        r#"xmlns:a7="http://example.com/7" xmlns:a8="http://example.com/8" "#,
+        r#"a2:x="" a3:x="" a4:x="" a5:x="" a6:x="" a7:x="" a8:x=""/>"#
+    );
+    // the order of a hash map can differ from one map to the next, so try a
+    // few times
+    for _ in 0..10 {
+        let x_id_clone = xot.clone_with_prefixes(x_id);
+        assert_eq!(xot.to_string(x_id_clone).unwrap(), expected);
+    }
+}
+
+/// Clone the element with the local name `x` in `xml` with
+/// `clone_with_prefixes`, in a `Xot` to which `prefixes` were added before,
+/// and serialize the clone.
+fn clone_x_with_prefixes(xml: &str, prefixes: &[&str]) -> String {
+    let mut xot = Xot::new();
+    for prefix in prefixes {
+        xot.add_prefix(prefix);
+    }
+    let root = xot.parse(xml).unwrap();
+    let x_id = xot
+        .descendants(root)
+        .find(|node| {
+            xot.element(*node)
+                .is_some_and(|element| xot.local_name_str(element.name()) == "x")
+        })
+        .unwrap();
+    let x_id_clone = xot.clone_with_prefixes(x_id);
+    xot.to_string(x_id_clone).unwrap()
+}
+
+#[test]
+fn test_clone_with_prefixes_namespace_order_outermost_first() {
+    // the declarations of the outermost ancestor come first, and those of
+    // one element in the order they are declared
+    let xml = concat!(
+        r#"<doc xmlns:z="urn:z" xmlns:a="urn:a" xmlns:spare="urn:s">"#,
+        r#"<mid xmlns:m="urn:m" xmlns:b="urn:b"><x b:p="" m:p="" a:p="" z:p=""/></mid>"#,
+        r#"</doc>"#
+    );
+    let expected = concat!(
+        r#"<x xmlns:z="urn:z" xmlns:a="urn:a" xmlns:m="urn:m" xmlns:b="urn:b" "#,
+        r#"b:p="" m:p="" a:p="" z:p=""/>"#
+    );
+    assert_eq!(clone_x_with_prefixes(xml, &[]), expected);
+}
+
+#[test]
+fn test_clone_with_prefixes_namespace_order_not_interning_order() {
+    // prefixes added to the Xot before, in another order, do not change the
+    // output
+    let xml = concat!(
+        r#"<doc xmlns:z="urn:z" xmlns:a="urn:a">"#,
+        r#"<mid xmlns:m="urn:m" xmlns:b="urn:b"><x b:p="" m:p="" a:p="" z:p=""/></mid>"#,
+        r#"</doc>"#
+    );
+    let expected = clone_x_with_prefixes(xml, &[]);
+    assert_eq!(
+        expected,
+        concat!(
+            r#"<x xmlns:z="urn:z" xmlns:a="urn:a" xmlns:m="urn:m" xmlns:b="urn:b" "#,
+            r#"b:p="" m:p="" a:p="" z:p=""/>"#
+        )
+    );
+    assert_eq!(clone_x_with_prefixes(xml, &["b", "m", "a", "z"]), expected);
+    assert_eq!(clone_x_with_prefixes(xml, &["m", "z", "b"]), expected);
+}
+
+#[test]
+fn test_clone_with_prefixes_namespace_order_redeclared_prefix() {
+    // the declaration that binds `p` is the inner one, so it comes after the
+    // outer declaration of `q`, whether or not it binds `p` to another
+    // namespace
+    let xml = concat!(
+        r#"<doc xmlns:p="urn:1" xmlns:q="urn:q"><mid xmlns:p="urn:2">"#,
+        r#"<x p:a="" q:a=""/></mid></doc>"#
+    );
+    assert_eq!(
+        clone_x_with_prefixes(xml, &[]),
+        r#"<x xmlns:q="urn:q" xmlns:p="urn:2" p:a="" q:a=""/>"#
+    );
+    let xml = concat!(
+        r#"<doc xmlns:p="urn:p" xmlns:q="urn:q"><mid xmlns:p="urn:p">"#,
+        r#"<x p:a="" q:a=""/></mid></doc>"#
+    );
+    assert_eq!(
+        clone_x_with_prefixes(xml, &[]),
+        r#"<x xmlns:q="urn:q" xmlns:p="urn:p" p:a="" q:a=""/>"#
+    );
+}
+
+#[test]
+fn test_clone_with_prefixes_namespace_order_default_namespace() {
+    let xml = r#"<doc xmlns:a="urn:a" xmlns="urn:d"><x a:p=""/></doc>"#;
+    assert_eq!(
+        clone_x_with_prefixes(xml, &["a"]),
+        r#"<x xmlns:a="urn:a" xmlns="urn:d" a:p=""/>"#
+    );
+}
+
+#[test]
+fn test_clone_with_prefixes_xml_prefix_first() {
+    // the `xml` prefix is bound without a declaration, so it comes first; it
+    // is not written
+    let mut xot = Xot::new();
+    let root = xot
+        .parse(r#"<doc xmlns:a="urn:a"><x a:p="" xml:lang="en"/></doc>"#)
+        .unwrap();
+    let doc_id = xot.document_element(root).unwrap();
+    let x_id = xot.first_child(doc_id).unwrap();
+    let x_id_clone = xot.clone_with_prefixes(x_id);
+    let prefixes: Vec<_> = xot
+        .namespaces(x_id_clone)
+        .iter()
+        .map(|(prefix, _)| xot.prefix_str(prefix).to_string())
+        .collect();
+    assert_eq!(prefixes, ["xml", "a"]);
+    assert_eq!(
+        xot.to_string(x_id_clone).unwrap(),
+        r#"<x xmlns:a="urn:a" a:p="" xml:lang="en"/>"#
+    );
+}
+
+#[test]
 fn test_clone_with_prefixes_non_element() {
     let mut xot = Xot::new();
     let root = xot
