@@ -122,6 +122,13 @@ pub enum ParseError {
     ///
     /// The span is the part of the DTD that is found, in the parsed text.
     DtdUnsupported(Span),
+    /// A processing instruction with the target `xml` in any case, such as
+    /// `<?XML x?>` or `<?xml?>`, which XML 1.0 does not allow (production
+    /// `PITarget`): only the XML declaration, at the start of a document, has
+    /// `xml` there.
+    ///
+    /// This holds the target and its span in the parsed text.
+    InvalidPiTarget(String, Span),
     /// No top-level element in the document.
     ///
     /// The position is the end of the parsed text.
@@ -143,7 +150,8 @@ pub enum ParseError {
     /// xmlparser error
     ///
     /// This holds the error, and the position in the parsed text where the
-    /// part that xmlparser could not read starts.
+    /// part that xmlparser could not read starts. The lines and columns in
+    /// the error are those of the parsed text too.
     XmlParser(xmlparser::Error, usize),
 }
 
@@ -171,6 +179,7 @@ impl ParseError {
             #[allow(deprecated)]
             ParseError::UnsupportedNotStandalone(span) => *span,
             ParseError::DtdUnsupported(span) => *span,
+            ParseError::InvalidPiTarget(_, span) => *span,
             ParseError::NoElementAtTopLevel(position) => Span::new(*position, *position),
             ParseError::MultipleElementsAtTopLevel(span) => *span,
             ParseError::TextAtTopLevel(span) => *span,
@@ -197,7 +206,10 @@ pub enum Error {
     /// Happens if you include `--` in a comment.
     InvalidComment(String),
     /// You aren't allowed to use this string as a processing instruction
-    /// target. Happens if you use `XML` or any case variation of this.
+    /// target. Happens if you use `XML` or any case variation of this, which
+    /// XML 1.0 does not allow (production `PITarget`): XML serialization
+    /// returns this for such a processing instruction, which the parser
+    /// rejects but which can be made through the API.
     InvalidTarget(String),
     /// The node you tried to act on is not an element.
     NotElement(Node),
@@ -378,6 +390,9 @@ impl std::fmt::Display for ParseError {
             #[allow(deprecated)]
             ParseError::UnsupportedNotStandalone(_) => write!(f, "Unsupported standalone"),
             ParseError::DtdUnsupported(_) => write!(f, "DTD is not supported"),
+            ParseError::InvalidPiTarget(s, _) => {
+                write!(f, "Invalid processing instruction target: {}", s)
+            }
             ParseError::NoElementAtTopLevel(_) => write!(f, "No element at top level"),
             ParseError::MultipleElementsAtTopLevel(_) => {
                 write!(f, "Multiple elements at top level")

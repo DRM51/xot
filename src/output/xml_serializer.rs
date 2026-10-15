@@ -83,6 +83,7 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
         self.check_characters(node, &output)?;
         self.check_attribute_name(node, &output)?;
         self.check_namespace_declaration(node, &output)?;
+        self.check_processing_instruction(&output)?;
         let data = self.render_output(node, &output)?;
         if data.space {
             w.write_all(b" ")?;
@@ -168,6 +169,20 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
                     name,
                     namespace.to_string(),
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Check that a processing instruction does not have the target `xml`
+    /// in any case, which XML 1.0 does not allow (production [17] PITarget,
+    /// https://www.w3.org/TR/xml/#sec-pi), as the parser does. At the start
+    /// of a document it would be read as an XML declaration.
+    fn check_processing_instruction(&self, output: &Output<'a>) -> Result<(), Error> {
+        if let Output::ProcessingInstruction(target, _) = output {
+            let target = self.xot.local_name_str(*target);
+            if target.eq_ignore_ascii_case("xml") {
+                return Err(Error::InvalidTarget(target.to_string()));
             }
         }
         Ok(())

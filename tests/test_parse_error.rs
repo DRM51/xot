@@ -586,3 +586,91 @@ fn test_duplicate_expanded_attribute_name() {
     assert!(matches!(err, xot::ParseError::DuplicateAttribute(ref name, _) if name == "n2:a"));
     assert_eq!(err.span(), (75..79).into());
 }
+
+#[test]
+fn test_processing_instruction_target_xml() {
+    // `xml` in any case is not a processing instruction target (XML 1.0,
+    // production [17] PITarget)
+    for (xml, target, span) in [
+        (r#"<?XmL x?><doc/>"#, "XmL", 2..5),
+        (r#"<?xml?><doc/>"#, "xml", 2..5),
+        (r#"<doc><?XML x?></doc>"#, "XML", 7..10),
+        (r#"<doc/><?Xml?>"#, "Xml", 8..11),
+    ] {
+        let err = parse_error(xml);
+        assert!(
+            matches!(err, xot::ParseError::InvalidPiTarget(ref t, _) if t == target),
+            "{}: {:?}",
+            xml,
+            err
+        );
+        assert_eq!(err.span(), span.into(), "{}", xml);
+    }
+    let err = parse_error(r#"<?XML x?><doc/>"#);
+    assert_eq!(
+        err.to_string(),
+        "Invalid processing instruction target: XML"
+    );
+    // an XML declaration that is not at the start, with any white space
+    let mut xot = Xot::new();
+    let err = xot
+        .parse_fragment("<?xml\tversion=\"1.0\"?><doc/>")
+        .unwrap_err();
+    assert!(matches!(err, xot::ParseError::InvalidPiTarget(ref t, _) if t == "xml"));
+    let err = parse_error("<doc><?xml\nversion=\"1.0\"?></doc>");
+    assert!(matches!(err, xot::ParseError::InvalidPiTarget(ref t, _) if t == "xml"));
+}
+
+/// The xmlparser error that parsing `xml` gives, and its position.
+fn xmlparser_error(xml: &str) -> (xmlparser::Error, usize) {
+    match parse_error(xml) {
+        xot::ParseError::XmlParser(e, position) => (e, position),
+        err => panic!("{:?}: {:?}", xml, err),
+    }
+}
+
+#[test]
+fn test_xmlparser_error_position_after_declaration_with_newline() {
+    // the tokenizer reads a space in the place of a newline after `<?xml`,
+    // but the lines and columns are those of the parsed text
+    let xml = "<?xml\nversion=\"1.0\"?>\n<a>\n<b =\"x\"/></a>";
+    let (e, position) = xmlparser_error(xml);
+    assert_eq!(e.pos(), xmlparser::TextPos::new(4, 3));
+    assert_eq!(position, 28);
+    assert_eq!(
+        parse_error(xml).to_string(),
+        "Parser error: invalid attribute at 4:3 cause invalid name token"
+    );
+    // after a byte order mark too
+    let (e, position) = xmlparser_error("\u{FEFF}<?xml\nversion=\"1.0\"?>\n<a>\n<b =\"x\"/></a>");
+    assert_eq!(e.pos(), xmlparser::TextPos::new(4, 3));
+    assert_eq!(position, 31);
+    // positions in the cause of the error, and in the declaration, are the
+    // same as with a space and a newline after `<?xml`
+    for (xml, same_lines) in [
+        (
+            "<?xml\nversion=\"1.0\"?>\n<a>\n<b x=\"1\" y=/></a>",
+            "<?xml \nversion=\"1.0\"?>\n<a>\n<b x=\"1\" y=/></a>",
+        ),
+        (
+            "<?xml\nversion=\"1.0\" encoding=?><a/>",
+            "<?xml \nversion=\"1.0\" encoding=?><a/>",
+        ),
+        (
+            "<?xml\tversion=\"1.0\"?>\n<a>\n<b x=\"1\" y=/></a>",
+            "<?xml version=\"1.0\"?>\n<a>\n<b x=\"1\" y=/></a>",
+        ),
+    ] {
+        assert_eq!(
+            xmlparser_error(xml).0,
+            xmlparser_error(same_lines).0,
+            "{:?}",
+            xml
+        );
+    }
+    let (e, _) = xmlparser_error("<?xml\nversion=\"1.0\"?>\n<a>\n<b x=\"1\" y=/></a>");
+    assert_eq!(
+        e.to_string(),
+        "invalid attribute at 4:9 cause expected quote mark not '/' at 4:12"
+    );
+}

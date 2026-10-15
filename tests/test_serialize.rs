@@ -633,3 +633,77 @@ fn test_serialize_namespace_declaration_round_trip() {
         ]
     );
 }
+
+/// A document with a processing instruction with `target` and `data` before
+/// its element `doc`, made through the API.
+fn document_with_processing_instruction(xot: &mut Xot, target: &str, data: Option<&str>) -> Node {
+    let doc = xot.parse("<doc/>").unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    let target = xot.add_name(target);
+    let pi = xot.new_processing_instruction(target, data);
+    xot.insert_before(doc_el, pi).unwrap();
+    doc
+}
+
+#[test]
+fn test_serialize_processing_instruction_target_xml() {
+    // made through the API: the parser rejects a processing instruction
+    // with the target `xml` in any case, so it is not written; at the start
+    // of a document it would read back as an XML declaration
+    for target in ["xml", "XML", "xMl"] {
+        let mut xot = Xot::new();
+        let doc = document_with_processing_instruction(&mut xot, target, Some("version=\"1.0\""));
+        let err = xot.to_string(doc).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidTarget(ref t) if t == target),
+            "{}: {:?}",
+            target,
+            err
+        );
+        assert_eq!(err.to_string(), format!("Invalid target: {}", target));
+    }
+}
+
+#[test]
+fn test_serialize_processing_instruction_round_trip() {
+    // XML output with a processing instruction either fails or reads back
+    // with the same processing instruction
+    let mut serialized = Vec::new();
+    for target in ["xml", "XmL", "xml-stylesheet", "xmlfoo", "x"] {
+        for data in [None, Some("version=\"1.0\"")] {
+            let mut xot = Xot::new();
+            let doc = document_with_processing_instruction(&mut xot, target, data);
+            let xml = match xot.to_string(doc) {
+                Ok(xml) => xml,
+                Err(err) => {
+                    assert!(
+                        matches!(err, Error::InvalidTarget(_)),
+                        "{}: {:?}",
+                        target,
+                        err
+                    );
+                    continue;
+                }
+            };
+            let doc2 = xot
+                .parse(&xml)
+                .unwrap_or_else(|err| panic!("{}: {}", xml, err));
+            let pi = xot.first_child(doc2).unwrap();
+            let pi = xot.processing_instruction(pi).unwrap();
+            assert_eq!(xot.local_name_str(pi.target()), target, "{}", xml);
+            assert_eq!(pi.data(), data, "{}", xml);
+            serialized.push(xml);
+        }
+    }
+    assert_eq!(
+        serialized,
+        [
+            r#"<?xml-stylesheet?><doc/>"#,
+            r#"<?xml-stylesheet version="1.0"?><doc/>"#,
+            r#"<?xmlfoo?><doc/>"#,
+            r#"<?xmlfoo version="1.0"?><doc/>"#,
+            r#"<?x?><doc/>"#,
+            r#"<?x version="1.0"?><doc/>"#,
+        ]
+    );
+}

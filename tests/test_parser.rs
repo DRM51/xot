@@ -1048,3 +1048,76 @@ fn test_parse_same_local_name_in_default_namespace() {
     let good = xot.first_child(x).unwrap();
     assert_eq!(xot.attributes(good).len(), 2);
 }
+
+#[test]
+fn test_parse_processing_instruction_targets_starting_with_xml() {
+    // only `xml` itself is not a target; other names starting with `xml`
+    // are
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<?xml-stylesheet href="a.css"?><?xmlfoo?><doc/>"#)
+        .unwrap();
+    let targets: Vec<_> = xot
+        .children(doc)
+        .filter_map(|node| xot.processing_instruction(node))
+        .map(|pi| xot.local_name_str(pi.target()).to_string())
+        .collect();
+    assert_eq!(targets, ["xml-stylesheet", "xmlfoo"]);
+}
+
+#[test]
+fn test_parse_declaration_with_other_white_space() {
+    // `<?xml` can be followed by any white space (XML 1.0, production [23]
+    // XMLDecl), not just a space
+    let mut xot = Xot::new();
+    for xml in [
+        "<?xml\tversion=\"1.0\"?><doc/>",
+        "<?xml\nversion=\"1.0\"?><doc/>",
+        "<?xml\r\n  version=\"1.0\"\tencoding=\"UTF-8\"?><doc/>",
+    ] {
+        let doc = xot.parse(xml).unwrap();
+        // the declaration is not a node
+        assert_eq!(xot.children(doc).count(), 1, "{:?}", xml);
+        assert_eq!(xot.to_string(doc).unwrap(), "<doc/>");
+    }
+    // it is read as a declaration
+    let err = xot.parse("<?xml\tversion=\"1.1\"?><doc/>").unwrap_err();
+    assert!(matches!(err, ParseError::UnsupportedVersion(ref v, _) if v == "1.1"));
+    assert_eq!(err.span(), Span::new(15, 18));
+    // in bytes too, with the encoding it declares
+    let doc = xot
+        .parse_bytes(b"<?xml\tversion=\"1.0\"\tencoding=\"ISO-8859-1\"?><p>\xe9</p>")
+        .unwrap();
+    let p = xot.document_element(doc).unwrap();
+    assert_eq!(xot.text_content_str(p), Some("\u{e9}"));
+}
+
+#[test]
+fn test_parse_declaration_with_other_white_space_after_byte_order_mark() {
+    // the tokenizer skips a byte order mark before the declaration
+    let mut xot = Xot::new();
+    for xml in [
+        "\u{FEFF}<?xml\tversion=\"1.0\"?><doc/>",
+        "\u{FEFF}<?xml\nversion=\"1.0\"?><doc/>",
+        "\u{FEFF}<?xml\r\nversion=\"1.0\"?><doc/>",
+    ] {
+        let doc = xot.parse(xml).unwrap();
+        assert_eq!(xot.children(doc).count(), 1, "{:?}", xml);
+        assert_eq!(xot.to_string(doc).unwrap(), "<doc/>");
+    }
+    let err = xot
+        .parse("\u{FEFF}<?xml\nversion=\"1.1\"?><doc/>")
+        .unwrap_err();
+    assert!(matches!(err, ParseError::UnsupportedVersion(ref v, _) if v == "1.1"));
+    assert_eq!(err.span(), Span::new(18, 21));
+    // in bytes, where the byte order mark is not part of the decoded text
+    for bytes in [
+        &b"\xEF\xBB\xBF<?xml\tversion=\"1.0\" encoding=\"UTF-8\"?><p>\xc3\xa9</p>"[..],
+        &b"\xEF\xBB\xBF<?xml\nversion=\"1.0\" encoding=\"UTF-8\"?><p>\xc3\xa9</p>"[..],
+    ] {
+        let doc = xot.parse_bytes(bytes).unwrap();
+        assert_eq!(xot.children(doc).count(), 1);
+        let p = xot.document_element(doc).unwrap();
+        assert_eq!(xot.text_content_str(p), Some("\u{e9}"));
+    }
+}

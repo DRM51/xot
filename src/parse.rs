@@ -1,6 +1,8 @@
+use std::borrow::Cow;
+
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use indextree::NodeId;
-use xmlparser::{ElementEnd, StrSpan, Token, Tokenizer};
+use xmlparser::{ElementEnd, StrSpan, Stream, TextPos, Token, Tokenizer};
 
 use crate::encoding::decode;
 use crate::entity::{normalize_line_ends, parse_attribute, parse_text};
@@ -607,8 +609,9 @@ impl Xot {
     /// [`SpanInfo`](`crate::SpanInfo`) which describes where nodes in the
     /// tree are located in the source text.
     pub fn parse_with_span_info(&mut self, xml: &str) -> Result<(Node, SpanInfo), ParseError> {
-        let tokenizer = Tokenizer::from(xml);
-        let (span_info, builder) = self._parse(tokenizer)?;
+        let text = declaration_with_space(xml);
+        let tokenizer = Tokenizer::from(text.as_ref());
+        let (span_info, builder) = self._parse(tokenizer, xml)?;
         // we expect both a document as the current node (everything else being
         // closed) *and* the content of this node containing a single element
         // if not, we have a problem. We want to produce a parse error for
@@ -673,7 +676,7 @@ impl Xot {
         xml: &str,
     ) -> Result<(Node, SpanInfo), ParseError> {
         let tokenizer = Tokenizer::from_fragment(xml, 0..xml.len());
-        let (span_info, builder) = self._parse(tokenizer)?;
+        let (span_info, builder) = self._parse(tokenizer, xml)?;
         if builder.is_current_node_document(self) {
             let document_node = Node::new(builder.tree);
             self.id_nodes_map
@@ -691,9 +694,12 @@ impl Xot {
         }
     }
 
+    /// Parse the tokens of `xml`, which the tokenizer reads, maybe with a
+    /// space in the place of one character (see `declaration_with_space`).
     fn _parse(
         &mut self,
         mut tokenizer: Tokenizer<'_>,
+        xml: &str,
     ) -> Result<(SpanInfo, DocumentBuilder), ParseError> {
         use Token::*;
 
@@ -710,7 +716,14 @@ impl Xot {
                 let token = match token {
                     Ok(token) => token,
                     Err(e) => {
-                        return Err(ParseError::XmlParser(e, position));
+                        // the lines and columns of the error count in the
+                        // text that the tokenizer reads, where a newline in
+                        // `xml` can be a space
+                        let text = tokenizer.stream().span().as_str();
+                        return Err(ParseError::XmlParser(
+                            reposition_error(e, text, xml),
+                            position,
+                        ));
                     }
                 };
                 match token {
@@ -785,6 +798,15 @@ impl Xot {
                         content,
                         span: _,
                     } => {
+                        // `xml` in any case is not a target
+                        // (https://www.w3.org/TR/xml/#sec-pi); only the XML
+                        // declaration has it there
+                        if target.as_str().eq_ignore_ascii_case("xml") {
+                            return Err(ParseError::InvalidPiTarget(
+                                target.to_string(),
+                                target.into(),
+                            ));
+                        }
                         let node_id = builder.processing_instruction(
                             target.as_str(),
                             content.map(|s| s.as_str()),
@@ -926,6 +948,97 @@ impl Xot {
         let xml = decode(bytes)?;
         self.parse(&xml)
     }
+}
+
+/// `xml`, with a space in the place of the white space after `<?xml` if it
+/// starts with `<?xml` followed by a tab, a newline or a carriage return,
+/// after a byte order mark if it has one.
+///
+/// An XML declaration is `<?xml` followed by white space
+/// (https://www.w3.org/TR/xml/#sec-prolog-dtd), which can be a tab, a
+/// newline or a carriage return, but the tokenizer only takes `<?xml`
+/// followed by a space for one, and reads the others as a processing
+/// instruction with the target `xml`. The tokenizer skips a byte order mark
+/// before it. A space instead of this one character changes neither the
+/// declaration nor the byte index of anything in the text, but a newline
+/// replaced by a space moves the lines and columns that follow it, so
+/// `_parse` counts those of an error in `xml` again.
+fn declaration_with_space(xml: &str) -> Cow<'_, str> {
+    let start = if xml.starts_with('\u{FEFF}') {
+        '\u{FEFF}'.len_utf8()
+    } else {
+        0
+    };
+    match xml.as_bytes()[start..] {
+        [b'<', b'?', b'x', b'm', b'l', b'\t' | b'\n' | b'\r', ..] => {
+            let mut xml = xml.to_string();
+            let white_space = start + "<?xml".len();
+            xml.replace_range(white_space..white_space + 1, " ");
+            Cow::Owned(xml)
+        }
+        _ => Cow::Borrowed(xml),
+    }
+}
+
+/// `error` from the tokenizer, with its lines and columns, which count in
+/// `text`, the text that the tokenizer reads, counted in `xml` instead.
+///
+/// The two texts have their characters at the same byte indices (see
+/// `declaration_with_space`), so each position is found as a byte index in
+/// `text`, and that index as a line and a column in `xml`, as the tokenizer
+/// counts them.
+fn reposition_error(error: xmlparser::Error, text: &str, xml: &str) -> xmlparser::Error {
+    use xmlparser::Error as E;
+    use xmlparser::StreamError as S;
+
+    let at = |pos: TextPos| Stream::from(xml).gen_text_pos_from(text_pos_index(text, pos));
+    let stream_error = |e: S| match e {
+        S::NonXmlChar(c, pos) => S::NonXmlChar(c, at(pos)),
+        S::InvalidChar(actual, expected, pos) => S::InvalidChar(actual, expected, at(pos)),
+        S::InvalidCharMultiple(actual, expected, pos) => {
+            S::InvalidCharMultiple(actual, expected, at(pos))
+        }
+        S::InvalidQuote(c, pos) => S::InvalidQuote(c, at(pos)),
+        S::InvalidSpace(c, pos) => S::InvalidSpace(c, at(pos)),
+        S::InvalidString(expected, pos) => S::InvalidString(expected, at(pos)),
+        S::UnexpectedEndOfStream
+        | S::InvalidName
+        | S::InvalidReference
+        | S::InvalidExternalID
+        | S::InvalidCommentData
+        | S::InvalidCommentEnd
+        | S::InvalidCharacterData => e,
+    };
+    match error {
+        E::InvalidDeclaration(e, pos) => E::InvalidDeclaration(stream_error(e), at(pos)),
+        E::InvalidComment(e, pos) => E::InvalidComment(stream_error(e), at(pos)),
+        E::InvalidPI(e, pos) => E::InvalidPI(stream_error(e), at(pos)),
+        E::InvalidDoctype(e, pos) => E::InvalidDoctype(stream_error(e), at(pos)),
+        E::InvalidEntity(e, pos) => E::InvalidEntity(stream_error(e), at(pos)),
+        E::InvalidElement(e, pos) => E::InvalidElement(stream_error(e), at(pos)),
+        E::InvalidAttribute(e, pos) => E::InvalidAttribute(stream_error(e), at(pos)),
+        E::InvalidCdata(e, pos) => E::InvalidCdata(stream_error(e), at(pos)),
+        E::InvalidCharData(e, pos) => E::InvalidCharData(stream_error(e), at(pos)),
+        E::UnknownToken(pos) => E::UnknownToken(at(pos)),
+    }
+}
+
+/// The byte index in `text` of a line and a column as the tokenizer counts
+/// them, both from 1: the line is one more than the number of newlines
+/// before the index, and the column one more than the number of characters
+/// between the last of these newlines and the index.
+fn text_pos_index(text: &str, pos: TextPos) -> usize {
+    let line_start = match (pos.row as usize).checked_sub(2) {
+        Some(newlines) => match text.match_indices('\n').nth(newlines) {
+            Some((newline, _)) => newline + 1,
+            None => return text.len(),
+        },
+        None => 0,
+    };
+    text[line_start..]
+        .char_indices()
+        .nth((pos.col as usize).saturating_sub(1))
+        .map_or(text.len(), |(index, _)| line_start + index)
 }
 
 /// Whether Namespaces in XML 1.0 allows a declaration of `prefix`, or of the

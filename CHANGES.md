@@ -65,6 +65,11 @@
   declaration and an attribute that would read back as a namespace
   declaration (see below).
 
+- `ParseError` has a new variant `InvalidPiTarget`: the parser rejects a
+  processing instruction with the target `xml` in any case, and XML
+  serialization rejects one made through the API with `Error::InvalidTarget`,
+  which was not returned before (see below).
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -248,6 +253,18 @@
   Serialization now fails with the new `Error::InvalidNamespaceDeclaration`
   instead. `Xot::tokens`, `Xot::pretty_tokens` and HTML 5 output are
   unchanged.
+
+- The parser accepted a processing instruction with the target `xml` in any
+  case, such as `<?XML x?>` or `<?xml?>`, which XML 1.0 does not allow
+  (production [17] PITarget). It is now `ParseError::InvalidPiTarget`, with
+  the span of the target. An XML declaration with a tab, newline or carriage
+  return after `<?xml`, which XML 1.0 allows, was read as such a processing
+  instruction, as the tokenizer takes only `<?xml` followed by a space for
+  an XML declaration; the parser now reads it as the XML declaration. XML
+  serialization wrote a processing instruction with the target `xml` made
+  through the API, which at the start of a document read back as an XML
+  declaration; it now fails with `Error::InvalidTarget`. `Xot::tokens`,
+  `Xot::pretty_tokens` and HTML 5 output are unchanged.
 
 ## [0.31.2] - 2025-04-09
 
