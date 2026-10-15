@@ -70,6 +70,12 @@
   serialization rejects one made through the API with `Error::InvalidTarget`,
   which was not returned before (see below).
 
+- `Xot::create_missing_prefixes` no longer declares a namespace that already
+  has a prefix in scope on an ancestor of the node (see below). A node that
+  is serialized on its own after it is detached may now give
+  `Error::MissingPrefix`: call `create_missing_prefixes` after detaching it,
+  or use `Xot::clone_with_prefixes`.
+
 ### Features added
 
 - `unescaped_cr` in `output::xml::Parameters` and
@@ -272,6 +278,21 @@
   `<a xmlns:p="urn:A" xmlns:q="urn:C"><b xmlns:p="urn:B"/></a>` it gave no
   prefix for `urn:C` on `b`. It now skips the shadowed declaration and gives
   `q`.
+
+- `Xot::create_missing_prefixes` numbered the prefixes it creates, and
+  declared them, in an order that varied from one run to the next, as it
+  took the namespaces from a hash set. It now numbers and declares them in
+  the order in which the namespaces are found in the tree. It could also
+  declare a prefix such as `n0` that was in scope already for another
+  namespace, so that this namespace had no prefix any more and serializing
+  gave `Error::MissingPrefix`; it now leaves out the prefixes that are in
+  scope on the node or declared in the tree. And it took the namespaces
+  declared on the ancestors of the node for missing ones: for `s` in
+  `<r xmlns:p="urn:p"><s><p:t/></s></r>` it declared `n0` for `urn:p`, so
+  `p:t` was written `n0:t`, and for an attribute such as `xml:lang` it
+  declared a prefix for the namespace of `xml`, which serialization left
+  out, so the output had an undeclared prefix. It now starts from the
+  declarations in scope on the parent of the node.
 
 ## [0.31.2] - 2025-04-09
 

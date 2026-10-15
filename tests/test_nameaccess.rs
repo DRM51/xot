@@ -149,6 +149,153 @@ fn test_create_missing_prefixes() {
 }
 
 #[test]
+fn test_create_missing_prefixes_traversal_order() {
+    // the prefixes are numbered and declared in the order in which the
+    // traversal finds the namespaces, attributes with their element, and a
+    // namespace found again keeps its prefix; a hash set gave another order
+    // from one set to the next, so try a few times
+    for _ in 0..10 {
+        let mut xot = Xot::new();
+        let doc = xot.parse(r#"<doc></doc>"#).unwrap();
+        let root_id = xot.document_element(doc).unwrap();
+        let c_ns = xot.add_namespace("urn:c");
+        let a_ns = xot.add_namespace("urn:a");
+        let d_ns = xot.add_namespace("urn:d");
+        let c_name = xot.add_name_ns("e", c_ns);
+        let a_name = xot.add_name_ns("e", a_ns);
+        let attribute_name = xot.add_name_ns("x", d_ns);
+        let c = xot.new_element(c_name);
+        let a = xot.new_element(a_name);
+        xot.append(root_id, c).unwrap();
+        xot.append(c, a).unwrap();
+        xot.append_element(a, c_name).unwrap();
+        xot.set_attribute(a, attribute_name, "1");
+        xot.create_missing_prefixes(root_id).unwrap();
+        assert_eq!(
+            xot.to_string(doc).unwrap(),
+            concat!(
+                r#"<doc xmlns:n0="urn:c" xmlns:n1="urn:a" xmlns:n2="urn:d">"#,
+                r#"<n0:e><n1:e n2:x="1"><n0:e/></n1:e></n0:e></doc>"#
+            )
+        );
+    }
+}
+
+#[test]
+fn test_create_missing_prefixes_keeps_prefix_in_scope() {
+    // `n0` is in scope, so the new namespace gets `n1`; declaring `n0` for
+    // it would leave `urn:other`, the namespace of `a`, without a prefix
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<doc xmlns:n0="urn:other"><n0:a/></doc>"#)
+        .unwrap();
+    let root_id = xot.document_element(doc).unwrap();
+    let ns_id = xot.add_namespace("urn:new");
+    let name_id = xot.add_name_ns("b", ns_id);
+    xot.append_element(root_id, name_id).unwrap();
+    xot.create_missing_prefixes(doc).unwrap();
+    let xml = xot.to_string(doc).unwrap();
+    assert_eq!(
+        xml,
+        r#"<doc xmlns:n0="urn:other" xmlns:n1="urn:new"><n0:a/><n1:b/></doc>"#
+    );
+    // which reads back with the same names
+    let doc = xot.parse(&xml).unwrap();
+    let root_id = xot.document_element(doc).unwrap();
+    let a = xot.first_child(root_id).unwrap();
+    let b = xot.next_sibling(a).unwrap();
+    assert_eq!(
+        xot.name_ns_str(xot.element(a).unwrap().name()),
+        ("a", "urn:other")
+    );
+    assert_eq!(
+        xot.name_ns_str(xot.element(b).unwrap().name()),
+        ("b", "urn:new")
+    );
+}
+
+#[test]
+fn test_create_missing_prefixes_keeps_prefix_of_ancestor() {
+    // `n0` is declared on an ancestor of the element the prefix goes on
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<doc xmlns:n0="urn:other"><x/><n0:a/></doc>"#)
+        .unwrap();
+    let root_id = xot.document_element(doc).unwrap();
+    let x = xot.first_child(root_id).unwrap();
+    let ns_id = xot.add_namespace("urn:new");
+    let name_id = xot.add_name_ns("b", ns_id);
+    xot.append_element(x, name_id).unwrap();
+    xot.create_missing_prefixes(x).unwrap();
+    assert_eq!(
+        xot.to_string(doc).unwrap(),
+        r#"<doc xmlns:n0="urn:other"><x xmlns:n1="urn:new"><n1:b/></x><n0:a/></doc>"#
+    );
+}
+
+#[test]
+fn test_create_missing_prefixes_keeps_prefix_declared_inside() {
+    // `n0` is declared inside the tree, where a new `n0` would not be in
+    // scope
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<doc><x xmlns:n0="urn:x"><n0:y/></x></doc>"#)
+        .unwrap();
+    let root_id = xot.document_element(doc).unwrap();
+    let x = xot.first_child(root_id).unwrap();
+    let ns_id = xot.add_namespace("urn:new");
+    let name_id = xot.add_name_ns("b", ns_id);
+    xot.append_element(x, name_id).unwrap();
+    xot.create_missing_prefixes(doc).unwrap();
+    assert_eq!(
+        xot.to_string(doc).unwrap(),
+        r#"<doc xmlns:n1="urn:new"><x xmlns:n0="urn:x"><n0:y/><n1:b/></x></doc>"#
+    );
+}
+
+#[test]
+fn test_create_missing_prefixes_uses_prefix_of_ancestor() {
+    // `p` is declared on an ancestor of the node, so `urn:p` misses no
+    // prefix, and `p:t` keeps it
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<r xmlns:p="urn:p"><s><p:t/></s></r>"#)
+        .unwrap();
+    let r = xot.document_element(doc).unwrap();
+    let s = xot.first_child(r).unwrap();
+    let ns_id = xot.add_namespace("urn:q");
+    let name_id = xot.add_name_ns("u", ns_id);
+    xot.append_element(s, name_id).unwrap();
+    xot.create_missing_prefixes(s).unwrap();
+    assert_eq!(
+        xot.to_string(doc).unwrap(),
+        r#"<r xmlns:p="urn:p"><s xmlns:n0="urn:q"><p:t/><n0:u/></s></r>"#
+    );
+}
+
+#[test]
+fn test_create_missing_prefixes_xml_prefix() {
+    // `xml` is in scope without a declaration
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<doc xml:lang="en"><a/></doc>"#).unwrap();
+    xot.create_missing_prefixes(doc).unwrap();
+    let doc_el = xot.document_element(doc).unwrap();
+    assert_eq!(xot.namespaces(doc_el).len(), 0);
+    assert_eq!(
+        xot.to_string(doc).unwrap(),
+        r#"<doc xml:lang="en"><a/></doc>"#
+    );
+    // also on an element without a parent
+    let a_name = xot.add_name("a");
+    let a = xot.new_element(a_name);
+    let lang = xot.add_name_ns("lang", xot.xml_namespace());
+    xot.set_attribute(a, lang, "en");
+    xot.create_missing_prefixes(a).unwrap();
+    assert_eq!(xot.namespaces(a).len(), 0);
+    assert_eq!(xot.to_string(a).unwrap(), r#"<a xml:lang="en"/>"#);
+}
+
+#[test]
 fn test_unresolved_namespaces() {
     let mut xot = Xot::new();
     let doc = xot

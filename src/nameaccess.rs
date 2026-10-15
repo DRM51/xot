@@ -1,4 +1,4 @@
-use ahash::{HashMap, HashSet};
+use ahash::HashSet;
 use genawaiter::rc::gen;
 use genawaiter::yield_;
 
@@ -582,11 +582,35 @@ impl Xot {
     /// attributes that have names in a namespace without a prefix to define
     /// the namespace in its ancestors.
     ///
-    /// This function creates the missing prefixes on the given node. The
-    /// prefixes are named "n0", "n1", "n2", etc.
+    /// This function creates the missing prefixes on the given node. A
+    /// namespace does not miss a prefix if one is in scope for it, declared
+    /// on the node, on one of its ancestors or in the tree. The prefixes are
+    /// named "n0", "n1", "n2", etc., in the order in which the namespaces
+    /// that miss a prefix are found in the tree, and are declared in that
+    /// order. A prefix that is already in scope on the node, or that is
+    /// declared in the tree, is left out, so that the new declarations change
+    /// no other name.
     ///
     /// You can use this function just before serializing the tree to XML
     /// using [`Xot::write`] or [`Xot::to_string`].
+    ///
+    /// ```rust
+    /// use xot::Xot;
+    ///
+    /// let mut xot = Xot::new();
+    /// let root = xot.parse(r#"<doc xmlns:n0="urn:a"><n0:a/></doc>"#)?;
+    /// let doc = xot.document_element(root)?;
+    /// let ns = xot.add_namespace("urn:b");
+    /// let b = xot.add_name_ns("b", ns);
+    /// xot.append_element(doc, b)?;
+    ///
+    /// xot.create_missing_prefixes(root)?;
+    /// assert_eq!(
+    ///     xot.to_string(root)?,
+    ///     r#"<doc xmlns:n0="urn:a" xmlns:n1="urn:b"><n0:a/><n1:b/></doc>"#
+    /// );
+    /// # Ok::<(), xot::Error>(())
+    /// ```
     pub fn create_missing_prefixes(&mut self, node: Node) -> Result<(), Error> {
         let node = if self.is_document(node) {
             self.document_element(node).unwrap()
@@ -596,26 +620,43 @@ impl Xot {
         if !self.is_element(node) {
             return Err(Error::NotElement(node));
         };
-        let mut fullname_serializer = FullnameSerializer::new(self, vec![]);
-        let mut missing_namespace_ids = HashSet::default();
+        // the traversal starts with the declarations in scope from outside the
+        // node: those of its parent, or the `xml` prefix if it has none
+        let in_scope = match self.parent(node) {
+            Some(parent) => self.namespaces_in_scope(parent).collect(),
+            None => self.base_prefixes().into_iter().collect(),
+        };
+        let mut fullname_serializer = FullnameSerializer::new(self, in_scope);
+        // the namespaces that miss a prefix, in the order the traversal finds
+        // them; the set only tells whether one is found already
+        let mut missing_namespace_ids = Vec::new();
+        let mut missing = HashSet::default();
+        // the prefixes that cannot be used for them
+        let mut used_prefixes: HashSet<PrefixId> =
+            self.prefixes_in_scope(node).into_keys().collect();
         for edge in self.traverse(node) {
             match edge {
                 NodeEdge::Start(node) => {
                     let element = self.element(node);
                     if let Some(element) = element {
+                        used_prefixes.extend(self.namespaces(node).keys());
                         fullname_serializer.push(self.namespace_declarations(node));
                         let element_fullname =
                             fullname_serializer.element_fullname(element.name_id);
                         if element_fullname.is_err() {
                             let namespace_id = self.namespace_for_name(element.name_id);
-                            missing_namespace_ids.insert(namespace_id);
+                            if missing.insert(namespace_id) {
+                                missing_namespace_ids.push(namespace_id);
+                            }
                         }
                         for name_id in self.attributes(node).keys() {
                             let attribute_fullname =
                                 fullname_serializer.attribute_fullname(name_id);
                             if attribute_fullname.is_err() {
                                 let namespace_id = self.namespace_for_name(name_id);
-                                missing_namespace_ids.insert(namespace_id);
+                                if missing.insert(namespace_id) {
+                                    missing_namespace_ids.push(namespace_id);
+                                }
                             }
                         }
                     }
@@ -627,16 +668,23 @@ impl Xot {
                 }
             }
         }
-        let mut prefixes_to_add = HashMap::default();
-        for (i, namespace_id) in missing_namespace_ids.iter().enumerate() {
-            let prefix = format!("n{}", i);
-            let prefix_id = self.add_prefix(&prefix);
-            prefixes_to_add.insert(prefix_id, namespace_id);
+        let mut prefixes_to_add = Vec::new();
+        let mut number = 0;
+        for namespace_id in missing_namespace_ids {
+            // the next prefix "nN" that is not used
+            let prefix_id = loop {
+                let prefix_id = self.add_prefix(&format!("n{}", number));
+                number += 1;
+                if !used_prefixes.contains(&prefix_id) {
+                    break prefix_id;
+                }
+            };
+            prefixes_to_add.push((prefix_id, namespace_id));
         }
         let mut namespaces = self.namespaces_mut(node);
 
         for (prefix_id, namespace_id) in prefixes_to_add {
-            namespaces.insert(prefix_id, *namespace_id);
+            namespaces.insert(prefix_id, namespace_id);
         }
         Ok(())
     }
