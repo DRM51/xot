@@ -94,7 +94,7 @@ impl Xot {
         if self.add_consolidate_text_nodes(child, self.last_child(parent), None) {
             return Ok(());
         }
-        parent.get().checked_append(child.get(), self.arena_mut())?;
+        self.arena.checked_append(parent.get(), child.get())?;
         Ok(())
     }
 
@@ -341,13 +341,10 @@ impl Xot {
             .take_while(|node| self.value(*node).value_category() != ValueCategory::Normal)
             .last();
         if let Some(insertion_point) = insertion_point {
-            insertion_point
-                .get()
-                .checked_insert_after(child.get(), self.arena_mut())?;
+            self.arena
+                .checked_insert_after(insertion_point.get(), child.get())?;
         } else {
-            parent
-                .get()
-                .checked_prepend(child.get(), self.arena_mut())?;
+            self.arena.checked_prepend(parent.get(), child.get())?;
         }
 
         Ok(())
@@ -385,9 +382,8 @@ impl Xot {
         ) {
             return Ok(());
         }
-        reference_node
-            .get()
-            .checked_insert_after(new_sibling.get(), self.arena_mut())?;
+        self.arena
+            .checked_insert_after(reference_node.get(), new_sibling.get())?;
         Ok(())
     }
 
@@ -405,9 +401,8 @@ impl Xot {
         ) {
             return Ok(());
         }
-        reference_node
-            .get()
-            .checked_insert_before(new_sibling.get(), self.arena_mut())?;
+        self.arena
+            .checked_insert_before(reference_node.get(), new_sibling.get())?;
         Ok(())
     }
 
@@ -436,7 +431,7 @@ impl Xot {
     pub fn detach(&mut self, node: Node) -> Result<(), Error> {
         let prev_node = self.previous_sibling(node);
         let next_node = self.next_sibling(node);
-        node.get().detach(self.arena_mut());
+        self.arena.detach(node.get());
         self.remove_consolidate_text_nodes(prev_node, next_node);
         Ok(())
     }
@@ -467,7 +462,7 @@ impl Xot {
     pub fn remove(&mut self, node: Node) -> Result<(), Error> {
         let prev_node = self.previous_sibling(node);
         let next_node = self.next_sibling(node);
-        node.get().remove_subtree(self.arena_mut());
+        self.arena.remove_subtree(node.get());
         self.remove_consolidate_text_nodes(prev_node, next_node);
         Ok(())
     }
@@ -751,7 +746,7 @@ impl Xot {
     // prefixes or attributes with this.
     fn remove_dangerously(&mut self, node: Node) {
         // remove the node itself
-        node.get().remove(self.arena_mut());
+        self.arena.remove(node.get());
     }
 
     /// Unwrap an element; its children are moved to its parent.
@@ -856,7 +851,7 @@ impl Xot {
             let wrapper = self.new_element(name_id);
             // detach the node, use low-level detach as we don't want to consolidate
             // text nodes
-            node.get().detach(self.arena_mut());
+            self.arena.detach(node.get());
             // append the node to the wrapper
             self.append(wrapper, node)?;
             // now insert the wrapper element
@@ -909,7 +904,7 @@ impl Xot {
         let previous_node = self.previous_sibling(replaced_node);
         // remove the replaced node, use low-level remove_tree to avoid
         // text node reconciliation and document element detection
-        replaced_node.get().remove_subtree(self.arena_mut());
+        self.arena.remove_subtree(replaced_node.get());
         // now insert the replacing node
         if let Some(previous_node) = previous_node {
             self.insert_after(previous_node, replacing_node)?;

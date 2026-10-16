@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
-use indextree::NodeId;
 use xmlparser::{ElementEnd, StrSpan, Stream, TextPos, Token, Tokenizer};
 
+use crate::arena::NodeId;
 use crate::encoding::decode;
 use crate::entity::{normalize_line_ends, parse_attribute, parse_text};
 use crate::error::ParseError;
@@ -154,8 +154,15 @@ impl DocumentBuilder {
 
     fn add(&mut self, value: Value, xot: &mut Xot) -> NodeId {
         let node_id = xot.arena.new_node(value);
-        self.current_node_id.append(node_id, &mut xot.arena);
+        self.append_to_current(node_id, xot);
         node_id
+    }
+
+    /// Append `node_id`, a node just made, to the current node.
+    fn append_to_current(&self, node_id: NodeId, xot: &mut Xot) {
+        xot.arena
+            .checked_append(self.current_node_id, node_id)
+            .expect("Preconditions not met: invalid argument");
     }
 
     fn open_element(
@@ -184,7 +191,7 @@ impl DocumentBuilder {
                 prefix_id: *prefix_id,
                 namespace_id: *namespace_id,
             }));
-            self.current_node_id.append(namespace_node, &mut xot.arena);
+            self.append_to_current(namespace_node, xot);
         }
         // add attribute nodes
         let mut attribute_spans: AttributeSpans = Vec::new();
@@ -232,7 +239,7 @@ impl DocumentBuilder {
                 attribute_builder.name_span,
                 attribute_builder.value_span,
             ));
-            self.current_node_id.append(attribute_node, &mut xot.arena);
+            self.append_to_current(attribute_node, xot);
         }
 
         Ok((node_id, span, attribute_spans))
@@ -242,10 +249,9 @@ impl DocumentBuilder {
     // took place returns the node id , otherwise none.
     fn consolidate_text(&mut self, content: &str, xot: &mut Xot) -> Option<NodeId> {
         // let's look at the last node we added
-        let last = xot.arena[self.current_node_id].last_child();
+        let last = xot.arena.last_child(self.current_node_id);
         if let Some(last) = last {
-            let value = xot.arena.get_mut(last).unwrap().get_mut();
-            if let Value::Text(last_text) = value {
+            if let Value::Text(last_text) = xot.arena.get_mut(last) {
                 last_text.get_mut().push_str(content);
                 return Some(last);
             }
@@ -272,12 +278,14 @@ impl DocumentBuilder {
     }
 
     fn close_element_immediate(&mut self, xot: &mut Xot) -> NodeId {
-        let current_node = xot.arena.get(self.current_node_id).unwrap();
-        if matches!(current_node.get(), Value::Element(_)) {
+        if matches!(xot.arena.get(self.current_node_id), Value::Element(_)) {
             self.name_id_builder.pop();
         }
         let closed_node_id = self.current_node_id;
-        self.current_node_id = current_node.parent().expect("Cannot close document node");
+        self.current_node_id = xot
+            .arena
+            .parent(closed_node_id)
+            .expect("Cannot close document node");
         closed_node_id
     }
 
@@ -299,8 +307,7 @@ impl DocumentBuilder {
         let name_id = self
             .name_id_builder
             .element_name_id(&prefix, &name, prefix.into(), xot)?;
-        let current_node = xot.arena.get(self.current_node_id).unwrap();
-        if let Value::Element(element) = current_node.get() {
+        if let Value::Element(element) = xot.arena.get(self.current_node_id) {
             if element.name_id != name_id {
                 return Err(ParseError::InvalidCloseTag(
                     prefix.to_string(),
@@ -311,7 +318,10 @@ impl DocumentBuilder {
             self.name_id_builder.pop();
         }
         let closed_node_id = self.current_node_id;
-        self.current_node_id = current_node.parent().expect("Cannot close document node");
+        self.current_node_id = xot
+            .arena
+            .parent(closed_node_id)
+            .expect("Cannot close document node");
         Ok(closed_node_id)
     }
 
@@ -341,7 +351,7 @@ impl DocumentBuilder {
     }
 
     fn is_current_node_document(&self, xot: &Xot) -> bool {
-        matches!(xot.arena[self.current_node_id].get(), Value::Document)
+        matches!(xot.arena.get(self.current_node_id), Value::Document)
     }
 }
 
@@ -599,11 +609,11 @@ impl SpanInfo {
     fn add_attribute_spans(&mut self, node_id: NodeId, attribute_spans: AttributeSpans) {
         for (attribute_name, name_span, value_span) in attribute_spans {
             self.add(
-                SpanInfoKey::AttributeName(node_id.into(), attribute_name),
+                SpanInfoKey::AttributeName(Node::new(node_id), attribute_name),
                 name_span,
             );
             self.add(
-                SpanInfoKey::AttributeValue(node_id.into(), attribute_name),
+                SpanInfoKey::AttributeValue(Node::new(node_id), attribute_name),
                 value_span,
             );
         }
@@ -755,11 +765,11 @@ impl Xot {
                     }
                     Text { text } => {
                         let node_id = builder.text(&text, self)?;
-                        span_info.extend_text_span(node_id.into(), text.into());
+                        span_info.extend_text_span(Node::new(node_id), text.into());
                     }
                     Cdata { text, span: _ } => {
                         let node_id = builder.cdata_text(text.as_str(), self)?;
-                        span_info.extend_text_span(node_id.into(), text.into());
+                        span_info.extend_text_span(Node::new(node_id), text.into());
                     }
                     ElementStart {
                         prefix,
@@ -779,28 +789,32 @@ impl Xot {
                             Open => {
                                 let (node_id, span, attribute_spans) =
                                     builder.open_element(self)?;
-                                span_info.add(SpanInfoKey::ElementStart(node_id.into()), span);
+                                span_info.add(SpanInfoKey::ElementStart(Node::new(node_id)), span);
                                 span_info.add_attribute_spans(node_id, attribute_spans);
                             }
                             Close(prefix, local) => {
                                 let node_id = builder.close_element(prefix, local, self)?;
-                                span_info
-                                    .add(SpanInfoKey::ElementEnd(node_id.into()), end_span.into());
+                                span_info.add(
+                                    SpanInfoKey::ElementEnd(Node::new(node_id)),
+                                    end_span.into(),
+                                );
                             }
                             Empty => {
                                 let (node_id, span, attribute_spans) =
                                     builder.open_element(self)?;
-                                span_info.add(SpanInfoKey::ElementStart(node_id.into()), span);
+                                span_info.add(SpanInfoKey::ElementStart(Node::new(node_id)), span);
                                 span_info.add_attribute_spans(node_id, attribute_spans);
                                 let node_id = builder.close_element_immediate(self);
-                                span_info
-                                    .add(SpanInfoKey::ElementEnd(node_id.into()), end_span.into());
+                                span_info.add(
+                                    SpanInfoKey::ElementEnd(Node::new(node_id)),
+                                    end_span.into(),
+                                );
                             }
                         }
                     }
                     Comment { text, span: _ } => {
                         let node_id = builder.comment(text.as_str(), self)?;
-                        span_info.add(SpanInfoKey::Comment(node_id.into()), text.into());
+                        span_info.add(SpanInfoKey::Comment(Node::new(node_id)), text.into());
                     }
                     ProcessingInstruction {
                         target,
@@ -821,9 +835,10 @@ impl Xot {
                             content.map(|s| s.as_str()),
                             self,
                         )?;
-                        span_info.add(SpanInfoKey::PiTarget(node_id.into()), target.into());
+                        span_info.add(SpanInfoKey::PiTarget(Node::new(node_id)), target.into());
                         if let Some(content) = content {
-                            span_info.add(SpanInfoKey::PiContent(node_id.into()), content.into());
+                            span_info
+                                .add(SpanInfoKey::PiContent(Node::new(node_id)), content.into());
                         }
                     }
                     Declaration { version, .. } => {

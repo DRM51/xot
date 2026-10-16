@@ -1,4 +1,4 @@
-// implements some of the HashMap API, based on nodes in the indextree
+// implements some of the HashMap API, based on nodes in the tree
 
 use ahash::AHashMap;
 
@@ -289,14 +289,14 @@ where
             let node = self.xot.arena.new_node(new_value);
             let insertion_point = A::insertion_point(self.xot, self.parent);
             if let Some(insertion_point) = insertion_point {
-                insertion_point
-                    .get()
-                    .checked_insert_after(node, &mut self.xot.arena)
+                self.xot
+                    .arena
+                    .checked_insert_after(insertion_point.get(), node)
                     .unwrap();
             } else {
-                self.parent
-                    .get()
-                    .checked_prepend(node, &mut self.xot.arena)
+                self.xot
+                    .arena
+                    .checked_prepend(self.parent.get(), node)
                     .unwrap();
             }
             None
@@ -329,14 +329,14 @@ where
         } else {
             let insertion_point = A::insertion_point(self.xot, self.parent);
             if let Some(insertion_point) = insertion_point {
-                insertion_point
-                    .get()
-                    .checked_insert_after(node.get(), &mut self.xot.arena)
+                self.xot
+                    .arena
+                    .checked_insert_after(insertion_point.get(), node.get())
                     .unwrap();
             } else {
-                self.parent
-                    .get()
-                    .checked_prepend(node.get(), &mut self.xot.arena)
+                self.xot
+                    .arena
+                    .checked_prepend(self.parent.get(), node.get())
                     .unwrap();
             }
             node

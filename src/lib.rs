@@ -60,6 +60,7 @@
 //! submodule.
 
 mod access;
+mod arena;
 mod creation;
 mod encoding;
 mod entity;

@@ -1,5 +1,4 @@
-use indextree::NodeEdge as IndexTreeNodeEdge;
-
+use crate::arena::{NodeEdge as ArenaNodeEdge, NodeId};
 use crate::error::Error;
 use crate::levelorder::{level_order_traverse, LevelOrder};
 use crate::nodemap::{category_predicate, Attributes, Namespaces};
@@ -295,7 +294,7 @@ impl Xot {
     /// assert!(xot.is_removed(text));
     /// ```
     pub fn is_removed(&self, node: Node) -> bool {
-        self.arena()[node.get()].is_removed()
+        self.arena.is_removed(node.get())
     }
 
     /// Get parent node.
@@ -316,24 +315,24 @@ impl Xot {
     /// assert_eq!(xot.parent(root), None);
     /// ```
     pub fn parent(&self, node: Node) -> Option<Node> {
-        self.arena()[node.get()].parent().map(Node::new)
+        self.arena.parent(node.get()).map(Node::new)
     }
 
     pub(crate) fn all_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        node.get().children(&self.arena).map(Node::new)
+        self.arena.children(node.get()).map(Node::new)
     }
 
     pub(crate) fn abnormal_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        node.get()
-            .children(&self.arena)
-            .take_while(|n| !self.arena[*n].get().is_normal())
+        self.arena
+            .children(node.get())
+            .take_while(|n| !self.arena.get(*n).is_normal())
             .map(Node::new)
     }
 
     pub(crate) fn normal_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        node.get()
-            .children(&self.arena)
-            .skip_while(|n| !self.arena[*n].get().is_normal())
+        self.arena
+            .children(node.get())
+            .skip_while(|n| !self.arena.get(*n).is_normal())
             .map(Node::new)
     }
 
@@ -445,15 +444,15 @@ impl Xot {
     }
 
     pub(crate) fn internal_first_child(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena[node.get()].first_child()?))
+        Some(Node::new(self.arena.first_child(node.get())?))
     }
 
     /// Get last child.
     ///
     /// Returns [`None`] if there are no children.
     pub fn last_child(&self, node: Node) -> Option<Node> {
-        let last_child = self.arena[node.get()].last_child()?;
-        if self.arena[last_child].get().is_normal() {
+        let last_child = self.arena.last_child(node.get())?;
+        if self.arena.get(last_child).is_normal() {
             Some(Node::new(last_child))
         } else {
             None
@@ -461,7 +460,7 @@ impl Xot {
     }
 
     pub(crate) fn internal_last_child(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena[node.get()].last_child()?))
+        Some(Node::new(self.arena.last_child(node.get())?))
     }
 
     /// Get next sibling.
@@ -482,9 +481,9 @@ impl Xot {
     /// assert_eq!(xot.next_sibling(b), None);
     /// ```
     pub fn next_sibling(&self, node: Node) -> Option<Node> {
-        let current_category = self.arena[node.get()].get().value_category();
-        let next_sibling = self.arena[node.get()].next_sibling()?;
-        let next_category = self.arena[next_sibling].get().value_category();
+        let current_category = self.arena.get(node.get()).value_category();
+        let next_sibling = self.arena.next_sibling(node.get())?;
+        let next_category = self.arena.get(next_sibling).value_category();
         if current_category != next_category {
             return None;
         }
@@ -492,16 +491,16 @@ impl Xot {
     }
 
     pub(crate) fn internal_next_sibling(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena[node.get()].next_sibling()?))
+        Some(Node::new(self.arena.next_sibling(node.get())?))
     }
 
     /// Get previous sibling.
     ///
     /// Returns [`None`] if there is no previous sibling.
     pub fn previous_sibling(&self, node: Node) -> Option<Node> {
-        let current_category = self.arena[node.get()].get().value_category();
-        let previous_sibling = self.arena[node.get()].previous_sibling()?;
-        let previous_category = self.arena[previous_sibling].get().value_category();
+        let current_category = self.arena.get(node.get()).value_category();
+        let previous_sibling = self.arena.previous_sibling(node.get())?;
+        let previous_category = self.arena.get(previous_sibling).value_category();
         if current_category != previous_category {
             return None;
         }
@@ -509,7 +508,7 @@ impl Xot {
     }
 
     pub(crate) fn internal_previous_sibling(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena[node.get()].previous_sibling()?))
+        Some(Node::new(self.arena.previous_sibling(node.get())?))
     }
 
     /// Iterator over ancestor nodes, including this one.
@@ -529,7 +528,7 @@ impl Xot {
     /// assert_eq!(ancestors, vec![c, b, a, root]);
     /// ```
     pub fn ancestors(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        node.get().ancestors(self.arena()).map(Node::new)
+        self.arena.ancestors(node.get()).map(Node::new)
     }
 
     /// Iterator over the child nodes of this node.
@@ -590,43 +589,40 @@ impl Xot {
     /// ```
     pub fn reverse_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         // From the last child back to the first, stopping at the namespace
-        // and attribute nodes before the children. Not the reverse of
-        // indextree's `Children`: its `next_back` (indextree 4.7.2) moves
-        // the front of the iterator instead of the back, so it repeats the
-        // last child without end.
-        let mut next = self.arena[node.get()].last_child();
+        // and attribute nodes before the children (the children iterator of
+        // the arena is not double-ended; see `Arena::children`).
+        let mut next = self.arena.last_child(node.get());
         std::iter::from_fn(move || {
             let current = next?;
-            let current_node = &self.arena[current];
-            if !current_node.get().is_normal() {
+            if !self.arena.get(current).is_normal() {
                 next = None;
                 return None;
             }
-            next = current_node.previous_sibling();
+            next = self.arena.previous_sibling(current);
             Some(Node::new(current))
         })
     }
 
-    fn normal_filter(&self) -> impl Fn(&indextree::NodeId) -> bool + '_ {
-        |node_id| self.arena[*node_id].get().is_normal()
+    fn normal_filter(&self) -> impl Fn(&NodeId) -> bool + '_ {
+        |node_id| self.arena.get(*node_id).is_normal()
     }
 
     fn normal_node_filter(&self) -> impl Fn(Node) -> bool + '_ {
-        move |node| self.arena[node.get()].get().is_normal()
+        move |node| self.arena.get(node.get()).is_normal()
     }
 
-    fn normal_edge_filter(&self) -> impl Fn(&indextree::NodeEdge) -> bool + '_ {
+    fn normal_edge_filter(&self) -> impl Fn(&ArenaNodeEdge) -> bool + '_ {
         move |edge| {
             let node_id = match edge {
-                indextree::NodeEdge::Start(node_id) => node_id,
-                indextree::NodeEdge::End(node_id) => node_id,
+                ArenaNodeEdge::Start(node_id) => node_id,
+                ArenaNodeEdge::End(node_id) => node_id,
             };
-            self.arena[*node_id].get().is_normal()
+            self.arena.get(*node_id).is_normal()
         }
     }
 
-    fn category_filter(&self, category: ValueCategory) -> impl Fn(&indextree::NodeId) -> bool + '_ {
-        move |node_id| self.arena[*node_id].get().value_category() == category
+    fn category_filter(&self, category: ValueCategory) -> impl Fn(&NodeId) -> bool + '_ {
+        move |node_id| self.arena.get(*node_id).value_category() == category
     }
 
     /// Iterator over of the descendants of this node,
@@ -645,8 +641,8 @@ impl Xot {
     /// assert_eq!(descendants, vec![a, b, c]);
     /// ```
     pub fn descendants(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        node.get()
-            .descendants(self.arena())
+        self.arena
+            .descendants(node.get())
             .filter(self.normal_filter())
             .map(Node::new)
     }
@@ -657,7 +653,7 @@ impl Xot {
     /// all in document order, where namespace nodes come before
     /// attribute nodes and attribute nodes come before normal children
     pub fn all_descendants(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        node.get().descendants(self.arena()).map(Node::new)
+        self.arena.descendants(node.get()).map(Node::new)
     }
 
     /// Reverse preorder traversal from node.
@@ -698,18 +694,18 @@ impl Xot {
     /// assert_eq!(siblings, vec![b, c]);
     /// ```
     pub fn following_siblings(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        let current_category = self.arena[node.get()].get().value_category();
-        node.get()
-            .following_siblings(self.arena())
+        let current_category = self.arena.get(node.get()).value_category();
+        self.arena
+            .following_siblings(node.get())
             .filter(self.category_filter(current_category))
             .map(Node::new)
     }
 
     /// Iterator over the preceding siblings of this node.
     pub fn preceding_siblings(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        let current_category = self.arena[node.get()].get().value_category();
-        node.get()
-            .preceding_siblings(self.arena())
+        let current_category = self.arena.get(node.get()).value_category();
+        self.arena
+            .preceding_siblings(node.get())
             .filter(self.category_filter(current_category))
             .map(Node::new)
     }
@@ -825,20 +821,20 @@ impl Xot {
     /// ]);
     /// ```
     pub fn traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        node.get()
-            .traverse(self.arena())
+        self.arena
+            .traverse(node.get())
             .filter(self.normal_edge_filter())
             .map(|edge| match edge {
-                IndexTreeNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-                IndexTreeNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
+                ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
+                ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
             })
     }
 
     /// Traverse nodes, including namespace and attribute nodes.
     pub fn all_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        node.get().traverse(self.arena()).map(|edge| match edge {
-            IndexTreeNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-            IndexTreeNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
+        self.arena.traverse(node.get()).map(|edge| match edge {
+            ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
+            ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
         })
     }
 
@@ -849,12 +845,12 @@ impl Xot {
     /// Note that you still have to start with a top-level node, it just traverses through
     /// its descendants in a reverse order.
     pub fn reverse_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        node.get()
-            .reverse_traverse(self.arena())
+        self.arena
+            .reverse_traverse(node.get())
             .filter(self.normal_edge_filter())
             .map(|edge| match edge {
-                IndexTreeNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-                IndexTreeNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
+                ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
+                ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
             })
     }
 
@@ -862,11 +858,11 @@ impl Xot {
     ///
     /// This is like [`Xot::all_traverse`] but includes namespace and
     pub fn reverse_all_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        node.get()
-            .reverse_traverse(self.arena())
+        self.arena
+            .reverse_traverse(node.get())
             .map(|edge| match edge {
-                IndexTreeNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-                IndexTreeNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
+                ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
+                ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
             })
     }
 

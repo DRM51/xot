@@ -1,6 +1,6 @@
 use ahash::{HashMap, HashMapExt};
-use indextree::{Arena, NodeId};
 
+use crate::arena::{Arena, NodeId};
 use crate::id::{Name, NameId, NameLookup, NamespaceId, NamespaceLookup, PrefixId, PrefixLookup};
 use crate::xmlvalue::Value;
 
@@ -29,9 +29,9 @@ impl Node {
     }
 }
 
-impl From<NodeId> for Node {
+impl From<indextree::NodeId> for Node {
     #[inline]
-    fn from(node_id: NodeId) -> Self {
+    fn from(node_id: indextree::NodeId) -> Self {
         Node(node_id)
     }
 }
@@ -95,16 +95,6 @@ impl Xot {
             xml_id_id,
             text_consolidation: true,
         }
-    }
-
-    #[inline]
-    pub(crate) fn arena(&self) -> &XmlArena {
-        &self.arena
-    }
-
-    #[inline]
-    pub(crate) fn arena_mut(&mut self) -> &mut XmlArena {
-        &mut self.arena
     }
 }
 
