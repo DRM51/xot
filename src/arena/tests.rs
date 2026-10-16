@@ -544,6 +544,82 @@ fn an_indextree_id_converts_to_the_node_at_its_position() {
     assert_eq!(my_key(crate::Node::from(ids[2]).get()), (3, 0));
 }
 
+#[test]
+fn append_fresh_appends_a_new_node_as_indextree_does() {
+    // random trees, each new node appended with `append_fresh` here and
+    // with indextree's `append` there, and nodes removed between, so that
+    // new nodes take their slots
+    let mut rng = Rng::new(5);
+    for _ in 0..100 {
+        let mut it = indextree::Arena::new();
+        let mut arena = Arena::new();
+        let mut live = vec![Pair {
+            it: it.new_node(0),
+            my: arena.new_node(0),
+        }];
+        for value in 1..300u32 {
+            if live.len() > 1 && rng.chance(15) {
+                // any node but the root
+                let pair = live[1 + rng.below(live.len() - 1)];
+                if rng.chance(50) {
+                    pair.it.remove(&mut it);
+                    arena.remove(pair.my);
+                } else {
+                    pair.it.remove_subtree(&mut it);
+                    arena.remove_subtree(pair.my);
+                }
+                live.retain(|pair| !arena.is_removed(pair.my));
+            } else {
+                let parent = live[rng.below(live.len())];
+                let node = Pair {
+                    it: it.new_node(value),
+                    my: arena.new_node(value),
+                };
+                assert_eq!(it_key(node.it), my_key(node.my));
+                parent.it.append(node.it, &mut it);
+                arena.append_fresh(parent.my, node.my);
+                live.push(node);
+            }
+            for (position, node) in it.as_slice().iter().enumerate() {
+                let slot = arena.slot(position as u32 + 1);
+                assert_eq!(node.is_removed(), slot.is_free());
+                assert_eq!(it_fields(node), slot.link);
+            }
+            for pair in &live {
+                assert_eq!(it_read(&it, pair.it), my_read(&arena, pair.my));
+            }
+        }
+        assert_eq!(
+            it_edges(live[0].it.traverse(&it)),
+            my_edges(arena.traverse(live[0].my))
+        );
+    }
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn append_fresh_checks_its_arguments_with_debug_assertions() {
+    let mut arena = Arena::new();
+    let parent = arena.new_node(0);
+    let child = arena.new_node(1);
+    arena.append_fresh(parent, child);
+    let removed = arena.new_node(2);
+    arena.remove(removed);
+    for (parent, child, message) in [
+        (parent, parent, "a node is appended to itself"),
+        (removed, child, "the parent is removed"),
+        (parent, removed, "the new child is removed"),
+        // a child already
+        (parent, child, "the new child is not a new node"),
+        // the parent of a child
+        (child, parent, "the new child is not a new node"),
+    ] {
+        let mut arena = arena.clone();
+        let panic = catch(move || arena.append_fresh(parent, child)).unwrap_err();
+        assert!(panic.contains(message), "{message}: {panic}");
+    }
+}
+
 // ---------------------------------------------------------------- the oracle
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

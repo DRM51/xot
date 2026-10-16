@@ -14,171 +14,171 @@ use crate::NamespaceId;
 
 type Namespaces = Vec<(PrefixId, NamespaceId)>;
 
-struct AttributeBuilder {
-    prefix: String,
-    name: String,
-    value: String,
-    name_span: Span,
+/// An attribute of the start tag that is being read. The names borrow from
+/// the text, and so does the value where normalizing it changes nothing.
+struct AttributeBuilder<'a> {
+    prefix: StrSpan<'a>,
+    name: StrSpan<'a>,
+    /// The normalized value.
+    value: Cow<'a, str>,
     value_span: Span,
-    prefix_span: Span,
 }
 
-struct ElementBuilder {
-    prefix: String,
-    name: String,
-    namespaces: Namespaces,
-    attributes: Vec<AttributeBuilder>,
-    prefix_span: Span,
-    span: Span,
+/// The name in the start tag that is being read, as in the text.
+struct ElementBuilder<'a> {
+    prefix: StrSpan<'a>,
+    name: StrSpan<'a>,
 }
 
-impl ElementBuilder {
-    fn new(prefix: StrSpan<'_>, name: StrSpan<'_>) -> Self {
-        ElementBuilder {
-            prefix: prefix.to_string(),
-            name: name.to_string(),
-            namespaces: Namespaces::new(),
-            attributes: Vec::new(),
-            prefix_span: prefix.into(),
-            span: Span::from_prefix_name(prefix, name),
-        }
+/// `prefix:name`, or `name` without a prefix, for an error.
+fn prefixed_name(prefix: StrSpan<'_>, name: StrSpan<'_>) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}:{}", prefix, name)
     }
 }
 
-struct DocumentBuilder {
+/// The nodes made so far, and the start tag that is being read.
+///
+/// `'a` is the lifetime of the text that the tokenizer reads: names and
+/// values borrow from it until they go into the tree.
+struct DocumentBuilder<'a> {
     tree: NodeId,
     current_node_id: NodeId,
-    name_id_builder: NameIdBuilder,
-    element_builder: Option<ElementBuilder>,
+    name_id_builder: NameIdBuilder<'a>,
+    element_builder: Option<ElementBuilder<'a>>,
+    /// The attributes of the start tag that is being read. The vector is
+    /// kept from one start tag to the next, so that it does not take memory
+    /// again for each element.
+    attributes: Vec<AttributeBuilder<'a>>,
+    /// The ids and the spans of the name and of the value of the attributes
+    /// of the element opened last, kept in the same way.
+    attribute_spans: AttributeSpans,
     seen_ids: HashSet<String>,
     id_nodes: HashMap<String, NodeId>,
     xml_id_id: NameId,
 }
 
-impl DocumentBuilder {
+impl<'a> DocumentBuilder<'a> {
     fn new(xot: &mut Xot) -> Self {
         let document = xot.arena.new_node(Value::Document);
-        let mut name_id_builder = NameIdBuilder::new(xot.base_prefixes().into_iter().collect());
-        let base_prefixes = vec![(xot.empty_prefix_id, xot.no_namespace_id)];
-        name_id_builder.push(base_prefixes);
+        let name_id_builder = NameIdBuilder::new(xot);
         DocumentBuilder {
             tree: document,
             current_node_id: document,
             name_id_builder,
             element_builder: None,
+            attributes: Vec::new(),
+            attribute_spans: Vec::new(),
             seen_ids: HashSet::new(),
             id_nodes: HashMap::new(),
             xml_id_id: xot.xml_id_id,
         }
     }
 
-    fn element(&mut self, prefix: StrSpan<'_>, name: StrSpan<'_>) {
-        self.element_builder = Some(ElementBuilder::new(prefix, name));
+    fn element(&mut self, prefix: StrSpan<'a>, name: StrSpan<'a>) {
+        self.element_builder = Some(ElementBuilder { prefix, name });
+        self.attributes.clear();
+        self.name_id_builder.start_declarations();
     }
 
     /// A namespace declaration: the attribute `xmlns` declares the default
     /// namespace, and the attribute `xmlns:p` the prefix `p`.
     fn prefix(
         &mut self,
-        prefix: StrSpan<'_>,
-        local: StrSpan<'_>,
-        value: StrSpan<'_>,
+        prefix: StrSpan<'a>,
+        local: StrSpan<'a>,
+        value: StrSpan<'a>,
         xot: &mut Xot,
     ) -> Result<(), ParseError> {
-        let (declared, name) = if prefix.is_empty() {
-            ("", "xmlns".to_string())
+        let declared = if prefix.is_empty() {
+            ""
         } else {
-            (local.as_str(), format!("xmlns:{}", local))
+            local.as_str()
         };
         let span = Span::from_prefix_name(prefix, local);
         // the namespace name is the normalized value of the namespace
         // declaration attribute, with its references expanded like in any
         // other attribute value (https://www.w3.org/TR/xml-names/#ns-decl)
         let namespace_uri = parse_attribute(value.as_str().into(), value.start())?;
-        let prefix_id = xot.prefix_lookup.get_id_mut(declared);
-        let namespaces = &mut self.element_builder.as_mut().unwrap().namespaces;
+        let prefix_id = self.name_id_builder.prefix_id(declared, xot);
         // like any attribute, a declaration can be on an element only once
-        if namespaces.iter().any(|(p, _)| *p == prefix_id) {
-            return Err(ParseError::DuplicateAttribute(name, span));
+        if self
+            .name_id_builder
+            .declarations()
+            .iter()
+            .any(|(p, _)| *p == prefix_id)
+        {
+            return Err(ParseError::DuplicateAttribute(
+                prefixed_name(prefix, local),
+                span,
+            ));
         }
         if !is_allowed_declaration(declared, &namespace_uri) {
             return Err(ParseError::InvalidNamespaceDeclaration(
-                name,
+                prefixed_name(prefix, local),
                 namespace_uri.into_owned(),
                 span,
             ));
         }
         let namespace_id = xot.namespace_lookup.get_id_mut(namespace_uri.as_ref());
-        namespaces.push((prefix_id, namespace_id));
+        self.name_id_builder.declare(prefix_id, namespace_id);
         Ok(())
     }
 
     fn attribute(
         &mut self,
-        prefix: StrSpan<'_>,
-        name: StrSpan<'_>,
-        value: StrSpan<'_>,
+        prefix: StrSpan<'a>,
+        name: StrSpan<'a>,
+        value: StrSpan<'a>,
     ) -> Result<(), ParseError> {
-        let attributes = &mut self.element_builder.as_mut().unwrap().attributes;
-        let is_duplicate = attributes.iter().any(|attribute_builder| {
-            attribute_builder.prefix == prefix.as_str() && attribute_builder.name == name.as_str()
+        let is_duplicate = self.attributes.iter().any(|attribute_builder| {
+            attribute_builder.prefix.as_str() == prefix.as_str()
+                && attribute_builder.name.as_str() == name.as_str()
         });
         if is_duplicate {
-            let attr_name = if prefix.is_empty() {
-                name.to_string()
-            } else {
-                format!("{}:{}", prefix, name)
-            };
-            let span = Span::from_prefix_name(prefix, name);
-            return Err(ParseError::DuplicateAttribute(attr_name, span));
+            return Err(ParseError::DuplicateAttribute(
+                prefixed_name(prefix, name),
+                Span::from_prefix_name(prefix, name),
+            ));
         }
         let value_span = value.into();
-        let value = parse_attribute(value.as_str().into(), value.start())?.to_string();
+        let value = parse_attribute(value.as_str().into(), value.start())?;
         // if this is an xml:id we want to apply xml:id normalization as described here
         // https://www.w3.org/TR/xml-id/#id-avn
-        let value = if name == "id" && prefix == "xml" {
-            normalize_xml_id(&value)
+        let value = if name.as_str() == "id" && prefix.as_str() == "xml" {
+            Cow::Owned(normalize_xml_id(&value))
         } else {
             value
         };
-        attributes.push(AttributeBuilder {
-            prefix: prefix.to_string(),
-            name: name.to_string(),
+        self.attributes.push(AttributeBuilder {
+            prefix,
+            name,
             value,
-            name_span: Span::from_prefix_name(prefix, name),
             value_span,
-            prefix_span: prefix.into(),
         });
         Ok(())
     }
 
     fn add(&mut self, value: Value, xot: &mut Xot) -> NodeId {
         let node_id = xot.arena.new_node(value);
-        self.append_to_current(node_id, xot);
+        xot.arena.append_fresh(self.current_node_id, node_id);
         node_id
     }
 
-    /// Append `node_id`, a node just made, to the current node.
-    fn append_to_current(&self, node_id: NodeId, xot: &mut Xot) {
-        xot.arena
-            .checked_append(self.current_node_id, node_id)
-            .expect("Preconditions not met: invalid argument");
-    }
+    fn open_element(&mut self, xot: &mut Xot) -> Result<(NodeId, Span), ParseError> {
+        let ElementBuilder { prefix, name } = self.element_builder.take().unwrap();
+        let span = Span::from_prefix_name(prefix, name);
 
-    fn open_element(
-        &mut self,
-        xot: &mut Xot,
-    ) -> Result<(NodeId, Span, AttributeSpans), ParseError> {
-        let element_builder = self.element_builder.take().unwrap();
-        let span = element_builder.span;
-
+        // the declarations of the start tag are in scope from here on
         self.name_id_builder
-            .push(element_builder.namespaces.clone());
+            .open(self.current_node_id, prefix.as_str(), name.as_str());
 
         let name_id = self.name_id_builder.element_name_id(
-            &element_builder.prefix,
-            &element_builder.name,
-            element_builder.prefix_span,
+            prefix.as_str(),
+            name.as_str(),
+            prefix.into(),
             xot,
         )?;
         let element_value = Value::Element(Element { name_id });
@@ -186,63 +186,64 @@ impl DocumentBuilder {
         self.current_node_id = node_id;
 
         // add namespace nodes
-        for (prefix_id, namespace_id) in &element_builder.namespaces {
+        for &(prefix_id, namespace_id) in self.name_id_builder.declarations() {
             let namespace_node = xot.arena.new_node(Value::Namespace(Namespace {
-                prefix_id: *prefix_id,
-                namespace_id: *namespace_id,
+                prefix_id,
+                namespace_id,
             }));
-            self.append_to_current(namespace_node, xot);
+            xot.arena.append_fresh(node_id, namespace_node);
         }
         // add attribute nodes
-        let mut attribute_spans: AttributeSpans = Vec::new();
-        for attribute_builder in element_builder.attributes {
+        self.attribute_spans.clear();
+        let mut attributes = std::mem::take(&mut self.attributes);
+        for attribute_builder in attributes.drain(..) {
+            let AttributeBuilder {
+                prefix,
+                name,
+                value,
+                value_span,
+            } = attribute_builder;
+            let name_span = Span::from_prefix_name(prefix, name);
             let name_id = self.name_id_builder.attribute_name_id(
-                &attribute_builder.prefix,
-                &attribute_builder.name,
-                attribute_builder.prefix_span,
+                prefix.as_str(),
+                name.as_str(),
+                prefix.into(),
                 xot,
             )?;
             // two attributes cannot have the same expanded name, even with
             // different prefixes (https://www.w3.org/TR/xml-names/#uniqAttrs)
-            if attribute_spans.iter().any(|(seen, _, _)| *seen == name_id) {
-                let name = if attribute_builder.prefix.is_empty() {
-                    attribute_builder.name
-                } else {
-                    format!("{}:{}", attribute_builder.prefix, attribute_builder.name)
-                };
+            if self
+                .attribute_spans
+                .iter()
+                .any(|(seen, _, _)| *seen == name_id)
+            {
                 return Err(ParseError::DuplicateAttribute(
-                    name,
-                    attribute_builder.name_span,
+                    prefixed_name(prefix, name),
+                    name_span,
                 ));
             }
+            let value = value.into_owned();
             // if we see xml:id, check that they aren't a duplicate
             // and keep track of all node ids that have an xml:id
             if name_id == self.xml_id_id {
-                if self.seen_ids.contains(&attribute_builder.value) {
-                    return Err(ParseError::DuplicateId(
-                        attribute_builder.value,
-                        attribute_builder.value_span,
-                    ));
+                if self.seen_ids.contains(&value) {
+                    return Err(ParseError::DuplicateId(value, value_span));
                 }
-                self.seen_ids.insert(attribute_builder.value.clone());
+                self.seen_ids.insert(value.clone());
                 // use entry api to add node id for the value given
-                self.id_nodes
-                    .insert(attribute_builder.value.clone(), node_id);
+                self.id_nodes.insert(value.clone(), node_id);
             }
 
-            let attribute_node = xot.arena.new_node(Value::Attribute(Attribute {
-                name_id,
-                value: attribute_builder.value,
-            }));
-            attribute_spans.push((
-                name_id,
-                attribute_builder.name_span,
-                attribute_builder.value_span,
-            ));
-            self.append_to_current(attribute_node, xot);
+            let attribute_node = xot
+                .arena
+                .new_node(Value::Attribute(Attribute { name_id, value }));
+            self.attribute_spans.push((name_id, name_span, value_span));
+            xot.arena.append_fresh(node_id, attribute_node);
         }
+        // the vector keeps its room for the next start tag
+        self.attributes = attributes;
 
-        Ok((node_id, span, attribute_spans))
+        Ok((node_id, span))
     }
 
     // consolidates a text node with previous node if possible. If consolidation
@@ -259,12 +260,12 @@ impl DocumentBuilder {
         None
     }
 
-    fn text(&mut self, content: &StrSpan, xot: &mut Xot) -> Result<NodeId, ParseError> {
+    fn text(&mut self, content: StrSpan<'a>, xot: &mut Xot) -> Result<NodeId, ParseError> {
         let content = parse_text(content.as_str().into(), content.start())?;
         if let Some(last) = self.consolidate_text(&content, xot) {
             return Ok(last);
         }
-        Ok(self.add(Value::Text(Text::new(content.to_string())), xot))
+        Ok(self.add(Value::Text(Text::new(content.into_owned())), xot))
     }
 
     fn cdata_text(&mut self, content: &str, xot: &mut Xot) -> Result<NodeId, ParseError> {
@@ -277,51 +278,50 @@ impl DocumentBuilder {
         Ok(self.add(Value::Text(Text::new(content.into_owned())), xot))
     }
 
-    fn close_element_immediate(&mut self, xot: &mut Xot) -> NodeId {
-        if matches!(xot.arena.get(self.current_node_id), Value::Element(_)) {
-            self.name_id_builder.pop();
-        }
+    /// Close the element that was just opened from an empty element tag.
+    fn close_element_immediate(&mut self) -> NodeId {
         let closed_node_id = self.current_node_id;
-        self.current_node_id = xot
-            .arena
-            .parent(closed_node_id)
-            .expect("Cannot close document node");
+        self.current_node_id = self.name_id_builder.close();
         closed_node_id
     }
 
     fn close_element(
         &mut self,
-        prefix: StrSpan,
-        name: StrSpan,
+        prefix: StrSpan<'a>,
+        name: StrSpan<'a>,
         xot: &mut Xot,
     ) -> Result<NodeId, ParseError> {
-        // an end tag without a start tag, which the tokenizer reports in a
-        // document, but takes in a fragment
-        if self.is_current_node_document(xot) {
-            return Err(ParseError::InvalidCloseTag(
+        let invalid_close_tag = || {
+            ParseError::InvalidCloseTag(
                 prefix.to_string(),
                 name.to_string(),
                 Span::from_prefix_name(prefix, name),
-            ));
-        }
-        let name_id = self
-            .name_id_builder
-            .element_name_id(&prefix, &name, prefix.into(), xot)?;
-        if let Value::Element(element) = xot.arena.get(self.current_node_id) {
-            if element.name_id != name_id {
-                return Err(ParseError::InvalidCloseTag(
-                    prefix.to_string(),
-                    name.to_string(),
-                    Span::from_prefix_name(prefix, name),
-                ));
+            )
+        };
+        // an end tag without a start tag, which the tokenizer reports in a
+        // document, but takes in a fragment
+        let Some(open) = self.name_id_builder.innermost() else {
+            return Err(invalid_close_tag());
+        };
+        // an end tag with the prefix and the local name of the start tag has
+        // its name, as the same declarations are in scope; with another
+        // prefix it can still have the same name, or one that is not
+        // declared
+        if open.prefix != prefix.as_str() || open.name != name.as_str() {
+            let name_id = self.name_id_builder.element_name_id(
+                prefix.as_str(),
+                name.as_str(),
+                prefix.into(),
+                xot,
+            )?;
+            if let Value::Element(element) = xot.arena.get(self.current_node_id) {
+                if element.name_id != name_id {
+                    return Err(invalid_close_tag());
+                }
             }
-            self.name_id_builder.pop();
         }
         let closed_node_id = self.current_node_id;
-        self.current_node_id = xot
-            .arena
-            .parent(closed_node_id)
-            .expect("Cannot close document node");
+        self.current_node_id = self.name_id_builder.close();
         Ok(closed_node_id)
     }
 
@@ -334,13 +334,16 @@ impl DocumentBuilder {
 
     fn processing_instruction(
         &mut self,
-        target: &str,
+        target: &'a str,
         content: Option<&str>,
         xot: &mut Xot,
     ) -> Result<NodeId, ParseError> {
         // XXX are there illegal processing instructions, like those with
         // ?> inside? or won't they pass the parser? What about those with xml?
-        let target = xot.add_name(target);
+        // the target is a name in no namespace, as `Xot::add_name` makes it
+        let target = self
+            .name_id_builder
+            .name_id(xot.no_namespace_id, target, xot);
         Ok(self.add(
             Value::ProcessingInstruction(ProcessingInstruction::new(
                 target,
@@ -355,78 +358,167 @@ impl DocumentBuilder {
     }
 }
 
-struct NameIdBuilder {
-    namespace_stack: Vec<Namespaces>,
+/// An element that is open.
+struct OpenElement<'a> {
+    /// The node it was appended to, which is the current node again when it
+    /// is closed.
+    parent: NodeId,
+    /// The prefix and the local name in its start tag.
+    prefix: &'a str,
+    name: &'a str,
+    /// Where its namespace declarations start in `NameIdBuilder::bindings`.
+    declarations_start: usize,
 }
 
-impl NameIdBuilder {
-    fn new(prefixes: Namespaces) -> Self {
-        let namespace_stack = vec![prefixes];
-        Self { namespace_stack }
+/// The prefixes in scope, and the ids of prefixes and names.
+///
+/// The ids come from `Xot::prefix_lookup` and `Xot::name_lookup` through
+/// `get_id_mut`, which makes an id the first time it is asked for one. As
+/// a name is a `String` there, finding the id of a name from the text took
+/// a new `String` each time; so this keeps the ids of the prefixes and names
+/// of this parse by the text it read them from, and asks `get_id_mut` only
+/// for those it has not seen yet in this parse. Such a call makes the id
+/// that it made before, in the same order, also when the parse fails; the
+/// calls that it leaves out are those for ids that are there already, which
+/// change nothing.
+struct NameIdBuilder<'a> {
+    /// The bindings in scope, the innermost last: those that every document
+    /// has (the prefix `xml`, and the empty prefix for no namespace), then
+    /// the namespace declarations of each open element in the order of the
+    /// text, and then those of the start tag that is being read.
+    bindings: Namespaces,
+    /// Where the declarations of the start tag that is being read, or of the
+    /// element that was opened last, start in `bindings`.
+    declarations_start: usize,
+    /// The elements that are open, the innermost last.
+    open_elements: Vec<OpenElement<'a>>,
+    /// The ids of the prefixes of this parse other than the empty one.
+    prefix_ids: HashMap<&'a str, PrefixId>,
+    /// The ids of the names of this parse, by namespace and local name.
+    name_ids: HashMap<(NamespaceId, &'a str), NameId>,
+}
+
+impl<'a> NameIdBuilder<'a> {
+    fn new(xot: &Xot) -> Self {
+        let mut bindings: Namespaces = xot.base_prefixes().into_iter().collect();
+        bindings.push((xot.empty_prefix_id, xot.no_namespace_id));
+        Self {
+            declarations_start: bindings.len(),
+            bindings,
+            open_elements: Vec::new(),
+            prefix_ids: HashMap::new(),
+            name_ids: HashMap::new(),
+        }
     }
 
-    fn push(&mut self, namespaces: Namespaces) {
-        self.namespace_stack.push(namespaces);
+    /// A start tag begins: its declarations follow.
+    fn start_declarations(&mut self) {
+        self.declarations_start = self.bindings.len();
     }
 
-    fn pop(&mut self) {
-        // should always be able to pop as there's a bottom entry
-        self.namespace_stack.pop();
+    /// A namespace declaration of the start tag that is being read.
+    fn declare(&mut self, prefix_id: PrefixId, namespace_id: NamespaceId) {
+        self.bindings.push((prefix_id, namespace_id));
+    }
+
+    /// The namespace declarations of the start tag that is being read, or
+    /// of the element that was opened last.
+    fn declarations(&self) -> &[(PrefixId, NamespaceId)] {
+        &self.bindings[self.declarations_start..]
+    }
+
+    /// The element of the start tag that is being read is opened under
+    /// `parent`; its declarations are in scope until it is closed.
+    fn open(&mut self, parent: NodeId, prefix: &'a str, name: &'a str) {
+        self.open_elements.push(OpenElement {
+            parent,
+            prefix,
+            name,
+            declarations_start: self.declarations_start,
+        });
+    }
+
+    /// The innermost open element, if any.
+    fn innermost(&self) -> Option<&OpenElement<'a>> {
+        self.open_elements.last()
+    }
+
+    /// Close the innermost open element, which takes its declarations out of
+    /// scope, and give the node it was appended to.
+    fn close(&mut self) -> NodeId {
+        let closed = self
+            .open_elements
+            .pop()
+            .expect("Cannot close document node");
+        self.bindings.truncate(closed.declarations_start);
+        closed.parent
+    }
+
+    /// The id of `prefix`, as `xot.prefix_lookup.get_id_mut` gives it.
+    #[inline]
+    fn prefix_id(&mut self, prefix: &'a str, xot: &mut Xot) -> PrefixId {
+        // every `Xot` has the empty prefix
+        if prefix.is_empty() {
+            return xot.empty_prefix_id;
+        }
+        *self
+            .prefix_ids
+            .entry(prefix)
+            .or_insert_with(|| xot.prefix_lookup.get_id_mut(prefix))
+    }
+
+    /// The id of the name `name` in the namespace `namespace_id`, as
+    /// `xot.name_lookup.get_id_mut` gives it.
+    #[inline]
+    fn name_id(&mut self, namespace_id: NamespaceId, name: &'a str, xot: &mut Xot) -> NameId {
+        *self
+            .name_ids
+            .entry((namespace_id, name))
+            .or_insert_with(|| xot.name_lookup.get_id_mut(&Name::new(name, namespace_id)))
+    }
+
+    /// The namespace that `prefix_id` is bound to in scope, if any.
+    fn namespace_id(&self, prefix_id: PrefixId) -> Option<NamespaceId> {
+        // the innermost declaration of the prefix
+        self.bindings
+            .iter()
+            .rev()
+            .find(|(p, _)| *p == prefix_id)
+            .map(|&(_, namespace_id)| namespace_id)
     }
 
     fn element_name_id(
         &mut self,
-        prefix: &str,
-        name: &str,
+        prefix: &'a str,
+        name: &'a str,
         prefix_span: Span,
         xot: &mut Xot,
     ) -> Result<NameId, ParseError> {
-        let prefix_id = xot.prefix_lookup.get_id_mut(prefix);
-        if let Ok(name_id) = self.name_id_with_prefix_id(prefix_id, name, xot) {
-            Ok(name_id)
-        } else {
-            Err(ParseError::UnknownPrefix(prefix.to_string(), prefix_span))
+        let prefix_id = self.prefix_id(prefix, xot);
+        match self.namespace_id(prefix_id) {
+            Some(namespace_id) => Ok(self.name_id(namespace_id, name, xot)),
+            None => Err(ParseError::UnknownPrefix(prefix.to_string(), prefix_span)),
         }
     }
 
     fn attribute_name_id(
         &mut self,
-        prefix: &str,
-        name: &str,
+        prefix: &'a str,
+        name: &'a str,
         prefix_span: Span,
         xot: &mut Xot,
     ) -> Result<NameId, ParseError> {
         // an unprefixed attribute is in no namespace, not
         // in the default namespace
         // https://stackoverflow.com/questions/3312390/xml-default-namespaces-for-unqualified-attribute-names
-        let prefix_id = xot.prefix_lookup.get_id_mut(prefix);
+        let prefix_id = self.prefix_id(prefix, xot);
         if prefix_id == xot.empty_prefix_id {
-            let name = Name::new(name.to_string(), xot.no_namespace_id);
-            return Ok(xot.name_lookup.get_id_mut(&name));
+            return Ok(self.name_id(xot.no_namespace_id, name, xot));
         }
-        if let Ok(name_id) = self.name_id_with_prefix_id(prefix_id, name, xot) {
-            Ok(name_id)
-        } else {
-            Err(ParseError::UnknownPrefix(prefix.to_string(), prefix_span))
+        match self.namespace_id(prefix_id) {
+            Some(namespace_id) => Ok(self.name_id(namespace_id, name, xot)),
+            None => Err(ParseError::UnknownPrefix(prefix.to_string(), prefix_span)),
         }
-    }
-
-    fn name_id_with_prefix_id(
-        &mut self,
-        prefix_id: PrefixId,
-        name: &str,
-        xot: &mut Xot,
-    ) -> Result<NameId, ()> {
-        // go through namespace stack backwards, find the first namespace
-        // that matches this prefix
-        let namespace_id = self.namespace_stack.iter().rev().find_map(|ns| {
-            ns.iter()
-                .rev()
-                .find_map(|(p, ns)| if *p == prefix_id { Some(*ns) } else { None })
-        });
-        let namespace_id = namespace_id.ok_or(())?;
-        let name = Name::new(name.to_string(), namespace_id);
-        Ok(xot.name_lookup.get_id_mut(&name))
     }
 }
 
@@ -924,12 +1016,12 @@ impl Xot {
     /// Parse the tokens of `xml`, which the tokenizer reads, maybe with a
     /// space in the place of one character (see `declaration_with_space`),
     /// and tell `recorder` the spans of the nodes made.
-    fn _parse<R: SpanRecorder>(
+    fn _parse<'a, R: SpanRecorder>(
         &mut self,
-        mut tokenizer: Tokenizer<'_>,
+        mut tokenizer: Tokenizer<'a>,
         xml: &str,
         recorder: &mut R,
-    ) -> Result<DocumentBuilder, ParseError> {
+    ) -> Result<DocumentBuilder<'a>, ParseError> {
         use Token::*;
 
         let mut builder = DocumentBuilder::new(self);
@@ -973,7 +1065,7 @@ impl Xot {
                         }
                     }
                     Text { text } => {
-                        let node_id = builder.text(&text, self)?;
+                        let node_id = builder.text(text, self)?;
                         recorder.text(node_id, text.into());
                     }
                     Cdata { text, span: _ } => {
@@ -996,19 +1088,27 @@ impl Xot {
 
                         match end {
                             Open => {
-                                let (node_id, span, attribute_spans) =
-                                    builder.open_element(self)?;
-                                record_element_start(recorder, node_id, span, attribute_spans);
+                                let (node_id, span) = builder.open_element(self)?;
+                                record_element_start(
+                                    recorder,
+                                    node_id,
+                                    span,
+                                    &builder.attribute_spans,
+                                );
                             }
                             Close(prefix, local) => {
                                 let node_id = builder.close_element(prefix, local, self)?;
                                 recorder.element_end(node_id, end_span.into());
                             }
                             Empty => {
-                                let (node_id, span, attribute_spans) =
-                                    builder.open_element(self)?;
-                                record_element_start(recorder, node_id, span, attribute_spans);
-                                let node_id = builder.close_element_immediate(self);
+                                let (node_id, span) = builder.open_element(self)?;
+                                record_element_start(
+                                    recorder,
+                                    node_id,
+                                    span,
+                                    &builder.attribute_spans,
+                                );
+                                let node_id = builder.close_element_immediate();
                                 recorder.element_end(node_id, end_span.into());
                             }
                         }
@@ -1188,10 +1288,10 @@ fn record_element_start<R: SpanRecorder>(
     recorder: &mut R,
     node_id: NodeId,
     span: Span,
-    attribute_spans: AttributeSpans,
+    attribute_spans: &[(NameId, Span, Span)],
 ) {
     recorder.element_start(node_id, span);
-    for (name_id, name_span, value_span) in attribute_spans {
+    for &(name_id, name_span, value_span) in attribute_spans {
         recorder.attribute(node_id, name_id, name_span, value_span);
     }
 }

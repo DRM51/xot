@@ -87,12 +87,48 @@ pub(crate) fn parse_attribute(
     parse_content(content, true, base_position)
 }
 
+/// `content` with its references expanded and its line ends normalized, and
+/// in an attribute value (`attribute`) its white space normalized
+/// (<https://www.w3.org/TR/xml/#AVNormalize>), or `content` itself if that
+/// changes nothing. `base_position` is the byte index of `content` in the
+/// text, for the errors.
+///
+/// Only a reference (`&`), a carriage return, and in an attribute value a tab
+/// or a newline, change the content, or make it an error, so without them
+/// it is returned as it is, without going through it character by
+/// character as [`parse_content_with_changes`] does.
 fn parse_content(
     content: Cow<str>,
     attribute: bool,
     base_position: usize,
 ) -> Result<Cow<str>, ParseError> {
-    let mut result = String::new();
+    // these characters are ASCII, and no byte of another character in
+    // UTF-8 is, so the bytes tell
+    let changes = if attribute {
+        content
+            .bytes()
+            .any(|b| matches!(b, b'&' | b'\r' | b'\t' | b'\n'))
+    } else {
+        content.bytes().any(|b| matches!(b, b'&' | b'\r'))
+    };
+    if !changes {
+        return Ok(content);
+    }
+    parse_content_with_changes(content, attribute, base_position)
+}
+
+/// [`parse_content`] for content that may change: it goes through the
+/// content character by character. It returns `content` itself if nothing
+/// changes after all.
+fn parse_content_with_changes(
+    content: Cow<str>,
+    attribute: bool,
+    base_position: usize,
+) -> Result<Cow<str>, ParseError> {
+    // the result is never longer than the content: a reference is longer
+    // than the character it stands for, and a carriage return, a carriage
+    // return and a newline, a tab or a newline become a single byte
+    let mut result = String::with_capacity(content.len());
     let mut chars = content.char_indices().peekable();
     let mut change = false;
     while let Some((position, c)) = chars.next() {
@@ -329,6 +365,8 @@ pub(crate) fn serialize_attribute<'a, N: Normalizer>(
 #[cfg(test)]
 mod tests {
 
+    use proptest::prelude::*;
+
     use crate::output::NoopNormalizer;
 
     use super::*;
@@ -379,6 +417,176 @@ mod tests {
         let result = parse_text(text.into(), 0).unwrap();
         // this is the same slice
         assert!(std::ptr::eq(text, result.as_ref()));
+    }
+
+    /// `parse_content` as it was before it returned content without
+    /// references, line ends and, in attribute values, white space to
+    /// normalize without going through it: the oracle of the tests below.
+    fn parse_content_before(
+        content: Cow<str>,
+        attribute: bool,
+        base_position: usize,
+    ) -> Result<Cow<str>, ParseError> {
+        let mut result = String::new();
+        let mut chars = content.char_indices().peekable();
+        let mut change = false;
+        while let Some((position, c)) = chars.next() {
+            if c == '\r' {
+                if let Some((_, peeked)) = chars.peek() {
+                    if peeked == &'\n' {
+                        chars.next();
+                    }
+                }
+                if !attribute {
+                    result.push('\n');
+                } else {
+                    result.push(' ');
+                }
+                change = true;
+            } else if c == '&' {
+                let mut entity = String::new();
+                let mut is_complete = false;
+                let mut end_position = 0;
+                for (p, c) in chars.by_ref() {
+                    if c == ';' {
+                        is_complete = true;
+                        end_position = p + 1;
+                        break;
+                    }
+                    entity.push(c);
+                }
+                if !is_complete {
+                    return Err(ParseError::UnclosedEntity(entity, base_position + position));
+                }
+                change = true;
+
+                if let Some(entity) = entity.strip_prefix('#') {
+                    let invalid = || {
+                        ParseError::InvalidEntity(
+                            entity.to_string(),
+                            Span::new(base_position + position, base_position + end_position),
+                        )
+                    };
+                    let (digits, radix) = match entity.strip_prefix('x') {
+                        Some(digits) => (digits, 16),
+                        None => (entity, 10),
+                    };
+                    if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                        return Err(invalid());
+                    }
+                    let c = u32::from_str_radix(digits, radix)
+                        .ok()
+                        .and_then(std::char::from_u32)
+                        .filter(|c| c.is_xml_char())
+                        .ok_or_else(invalid)?;
+                    result.push(c);
+                } else {
+                    match entity.as_str() {
+                        "amp" => result.push('&'),
+                        "apos" => result.push('\''),
+                        "gt" => result.push('>'),
+                        "lt" => result.push('<'),
+                        "quot" => result.push('"'),
+                        _ => {
+                            return Err(ParseError::InvalidEntity(
+                                entity,
+                                Span::new(base_position + position, base_position + end_position),
+                            ))
+                        }
+                    }
+                }
+            } else if attribute && (c == '\t' || c == '\n') {
+                result.push(' ');
+                change = true;
+            } else {
+                result.push(c);
+            }
+        }
+
+        if !change {
+            Ok(content)
+        } else {
+            Ok(result.into())
+        }
+    }
+
+    /// A result as text that compares the value, whether it is borrowed, and
+    /// an error with its debug text, which has its position or span.
+    fn described(result: Result<Cow<str>, ParseError>) -> String {
+        match result {
+            Ok(Cow::Borrowed(s)) => format!("borrowed {:?}", s),
+            Ok(Cow::Owned(s)) => format!("owned {:?}", s),
+            Err(e) => format!("error {:?}", e),
+        }
+    }
+
+    /// Text made of pieces that `parse_content` treats in a particular way:
+    /// references that are known, not known or not closed, and line ends
+    /// and white space, with any other characters between them.
+    fn content() -> impl Strategy<Value = String> {
+        let piece = prop_oneof![
+            4 => any::<char>().prop_map(String::from),
+            1 => prop::sample::select(vec![
+                "&amp;", "&lt;", "&gt;", "&apos;", "&quot;", "&#65;", "&#x41;", "&#x1F600;",
+                "&#9;", "&#xD;", "&#0;", "&#x;", "&#;", "&#-1;", "&ampx;", "&;", "&", ";",
+                "#", "x", "\r", "\n", "\r\n", "\n\r", "\t", " ", "a", "\u{E9}",
+            ])
+            .prop_map(String::from),
+        ];
+        prop::collection::vec(piece, 0..12).prop_map(|pieces| pieces.concat())
+    }
+
+    proptest! {
+        #[test]
+        fn parse_content_skips_content_that_does_not_change(
+            content in content(),
+            attribute in any::<bool>(),
+            base_position in 0usize..1000,
+        ) {
+            let fast = parse_content(content.as_str().into(), attribute, base_position);
+            // a borrowed result is the content itself
+            if let Ok(Cow::Borrowed(s)) = &fast {
+                prop_assert!(std::ptr::eq(*s, content.as_str()));
+            }
+            let fast = described(fast);
+            let slow = described(parse_content_with_changes(
+                content.as_str().into(),
+                attribute,
+                base_position,
+            ));
+            let before = described(parse_content_before(
+                content.as_str().into(),
+                attribute,
+                base_position,
+            ));
+            prop_assert_eq!(&fast, &before);
+            prop_assert_eq!(&slow, &before);
+        }
+    }
+
+    #[test]
+    fn parse_content_returns_content_without_changes_as_it_is() {
+        for (content, text, attribute) in [
+            ("", true, true),
+            ("text \u{E9} \u{1F600} ;#x", true, true),
+            // a tab and a newline change attribute values only
+            ("a\u{9}b\u{A}c", true, false),
+            ("a\r\nb", false, false),
+            ("a&amp;b", false, false),
+        ] {
+            assert_eq!(
+                matches!(parse_text(content.into(), 0), Ok(Cow::Borrowed(_))),
+                text,
+                "{:?}",
+                content
+            );
+            assert_eq!(
+                matches!(parse_attribute(content.into(), 0), Ok(Cow::Borrowed(_))),
+                attribute,
+                "{:?}",
+                content
+            );
+        }
     }
 
     #[test]

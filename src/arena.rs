@@ -951,6 +951,40 @@ impl<T> Arena<T> {
         Ok(())
     }
 
+    /// Append `new_child`, a node that [`Arena::new_node`] just made, to the
+    /// children of `parent`, a node that is not removed, without the checks
+    /// of [`Arena::checked_append`]: for such a node it does what that does.
+    ///
+    /// The two are different nodes, neither is removed, and `new_child` has
+    /// no parent, siblings or children, so it is not an ancestor of `parent`
+    /// and is detached already; `parent` has both a first and a last child or
+    /// neither. Debug assertions check this, and only they do.
+    #[inline]
+    pub(crate) fn append_fresh(&mut self, parent: NodeId, new_child: NodeId) {
+        let (p, c) = (parent.index1.get(), new_child.index1.get());
+        if cfg!(debug_assertions) {
+            assert_ne!(p, c, "a node is appended to itself");
+            let parent_slot = self.slot(p);
+            assert!(
+                !parent_slot.is_free() && parent_slot.generation == parent.generation,
+                "the parent is removed"
+            );
+            assert_eq!(
+                parent_slot.link[FIRST] != 0,
+                parent_slot.link[LAST] != 0,
+                "the parent has a first child or a last child, not both"
+            );
+            let child_slot = self.slot(c);
+            assert!(
+                !child_slot.is_free() && child_slot.generation == new_child.generation,
+                "the new child is removed"
+            );
+            assert_eq!(child_slot.link, [0; 5], "the new child is not a new node");
+        }
+        let last = self.slot(p).link[LAST];
+        self.insert_simple(c, p, last, 0);
+    }
+
     /// Prepend `new_child` to the children of `parent`.
     ///
     /// Fails with `PrependSelf` if the two are the same node, then with

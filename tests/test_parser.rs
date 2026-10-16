@@ -1130,3 +1130,116 @@ fn test_parse_declaration_with_other_white_space_after_byte_order_mark() {
         assert_eq!(xot.text_content_str(p), Some("\u{e9}"));
     }
 }
+
+#[test]
+fn test_end_tag_with_another_prefix_for_the_same_namespace() {
+    // an end tag matches its start tag when it has the same name, even
+    // with another prefix for its namespace
+    for xml in [
+        r#"<p:a xmlns:p="urn:x" xmlns:q="urn:x"></q:a>"#,
+        r#"<a xmlns="urn:x" xmlns:q="urn:x"></q:a>"#,
+        r#"<q:a xmlns:q="urn:x"><b xmlns="urn:x"><c></q:c></q:b></q:a>"#,
+    ] {
+        let mut xot = Xot::new();
+        let doc = xot.parse(xml).unwrap();
+        let a = xot.document_element(doc).unwrap();
+        let name = xot.node_name(a).unwrap();
+        assert_eq!(xot.name_ns_str(name), ("a", "urn:x"), "{}", xml);
+    }
+    // the same prefix for another namespace does not match
+    let mut xot = Xot::new();
+    let err = xot
+        .parse(r#"<p:a xmlns:p="urn:x"><b xmlns:p="urn:y"></p:a></b></p:a>"#)
+        .unwrap_err();
+    assert!(
+        matches!(err, ParseError::InvalidCloseTag(ref p, ref n, _) if p == "p" && n == "a"),
+        "{:?}",
+        err
+    );
+}
+
+#[test]
+fn test_parse_makes_names_in_the_order_of_the_text() {
+    let mut xot = Xot::new();
+    xot.parse(r#"<a xmlns:p="urn:p" p:x="1" y="2"><p:b/><?t?><c>text</c><b/></a>"#)
+        .unwrap();
+    let p = xot.namespace("urn:p").unwrap();
+    let names = [
+        xot.name("a").unwrap(),
+        xot.name_ns("x", p).unwrap(),
+        xot.name("y").unwrap(),
+        xot.name_ns("b", p).unwrap(),
+        xot.name("t").unwrap(),
+        xot.name("c").unwrap(),
+        xot.name("b").unwrap(),
+    ];
+    assert!(
+        names.windows(2).all(|pair| pair[0] < pair[1]),
+        "{:?}",
+        names
+    );
+}
+
+#[test]
+fn test_failed_parse_keeps_the_names_and_prefixes_it_made() {
+    // the name of an end tag that does not match its start tag is made
+    // while they are compared
+    let mut xot = Xot::new();
+    assert!(xot.name("b").is_none());
+    let err = xot.parse("<a></b>").unwrap_err();
+    assert!(matches!(err, ParseError::InvalidCloseTag(_, _, _)));
+    assert!(xot.name("b").is_some());
+    // the prefix of a name is made before it is found not to be declared
+    for xml in ["<a></z:a>", "<z:a/>", r#"<a z:x="1"/>"#] {
+        let mut xot = Xot::new();
+        assert!(xot.prefix("z").is_none());
+        let err = xot.parse(xml).unwrap_err();
+        assert!(
+            matches!(err, ParseError::UnknownPrefix(ref p, _) if p == "z"),
+            "{}: {:?}",
+            xml,
+            err
+        );
+        assert!(xot.prefix("z").is_some(), "{}", xml);
+    }
+    // two attributes with the same expanded name: the name is made, and
+    // the error comes when the second one has it too
+    let mut xot = Xot::new();
+    let err = xot
+        .parse(r#"<a xmlns:p="urn:p" xmlns:q="urn:p" p:x="1" q:x="2"/>"#)
+        .unwrap_err();
+    assert!(matches!(err, ParseError::DuplicateAttribute(ref n, _) if n == "q:x"));
+    let p = xot.namespace("urn:p").unwrap();
+    assert!(xot.name_ns("x", p).is_some());
+    // the same attribute twice is found before any name is made
+    let mut xot = Xot::new();
+    let err = xot
+        .parse(r#"<a xmlns:p="urn:p" p:x="1" p:x="2"/>"#)
+        .unwrap_err();
+    assert!(matches!(err, ParseError::DuplicateAttribute(ref n, _) if n == "p:x"));
+    let p = xot.namespace("urn:p").unwrap();
+    assert!(xot.name_ns("x", p).is_none());
+    assert!(xot.name("a").is_none());
+}
+
+#[test]
+fn test_parse_finds_names_made_before() {
+    // a later parse in the same `Xot` gives the ids made before
+    let mut xot = Xot::new();
+    let first = xot
+        .parse(r#"<a xmlns:p="urn:p" p:x="1"><?t?><p:b/></a>"#)
+        .unwrap();
+    let second = xot
+        .parse(r#"<a xmlns:p="urn:p" p:x="1"><?t?><p:b/></a>"#)
+        .unwrap();
+    let names = |xot: &Xot, doc| -> Vec<_> {
+        xot.all_descendants(doc)
+            .filter_map(|node| xot.node_name(node))
+            .collect()
+    };
+    assert_eq!(names(&xot, first), names(&xot, second));
+    assert_eq!(
+        xot.to_string(first).unwrap(),
+        xot.to_string(second).unwrap()
+    );
+}

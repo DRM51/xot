@@ -349,6 +349,24 @@
   of 302.0 MiB (the input text included) and at 167.8 MiB of resident
   memory instead of 429.5 MiB, and takes 284 ms instead of 383 ms.
 
+- Parsing allocates about once for each text node and attribute value, for
+  the string that the node keeps, instead of about 3.3 times for each node.
+  Names, prefixes and values borrow from the text until they go into the
+  tree. Each name and prefix is looked up in the `Xot` once in a parse, and
+  after that by the text it was read from, so that a name no longer takes a
+  new `String` for each element. An end tag with the prefix and the local
+  name of its start tag is not looked up at all. Text and attribute values
+  without a reference, a carriage return or, in attribute values, a tab or
+  a newline are copied as they are instead of character by character. The
+  room for the attributes and the namespace declarations of an element is
+  kept from one element to the next. Names, prefixes and namespaces get
+  their ids in the same order as before, also when parsing fails. On a
+  generated document of 25 megabytes with 2.0M nodes, parsing makes
+  1,000,225 allocations instead of 6,500,920 and 21 reallocations instead of
+  499,916, keeps the same heap, and takes 0.45 times as long (136 ms against
+  301 ms in the same runs); `Xot::parse_with_span_info` takes 0.66 times as
+  long.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text
