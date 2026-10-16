@@ -1,21 +1,24 @@
 use crate::xmlvalue::{Attribute, Value, ValueCategory};
 use crate::{NameId, Node, Xot};
 
-use super::core::{category_predicate, MutableNodeMap, NodeMap, ValueAdapter};
+use super::core::{MutableNodeMap, NodeMap, ValueAdapter};
 
 pub struct AttributeAdapter {}
 
 impl ValueAdapter<NameId, String> for AttributeAdapter {
+    #[inline]
     fn matches(value: &Value) -> bool {
         matches!(value, Value::Attribute(_))
     }
 
-    fn children(xot: &Xot, node: Node) -> impl Iterator<Item = Node> + '_ {
-        xot.all_children(node)
-            .skip_while(category_predicate(xot, ValueCategory::Namespace))
-            .take_while(category_predicate(xot, ValueCategory::Attribute))
+    #[inline]
+    fn entries(xot: &Xot, node: Node) -> impl Iterator<Item = (Node, &Value)> + '_ {
+        xot.all_children_values(node)
+            .skip_while(|(_, value)| value.value_category() == ValueCategory::Namespace)
+            .take_while(|(_, value)| value.value_category() == ValueCategory::Attribute)
     }
 
+    #[inline]
     fn insertion_point(xot: &Xot, node: Node) -> Option<Node> {
         let last_child = Self::children(xot, node).last();
         // if there is a last child, insert after it
@@ -24,15 +27,16 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
         }
         // if there is no last child, then insert after the last namespace node
         let namespaces = xot
-            .all_children(node)
-            .take_while(category_predicate(xot, ValueCategory::Namespace));
-        if let Some(last_namespace) = namespaces.last() {
+            .all_children_values(node)
+            .take_while(|(_, value)| value.value_category() == ValueCategory::Namespace);
+        if let Some((last_namespace, _)) = namespaces.last() {
             return Some(last_namespace);
         }
         // if there is no namespace node, we want to prepend
         None
     }
 
+    #[inline]
     fn key(value: &Value) -> NameId {
         match value {
             Value::Attribute(Attribute { name_id, .. }) => *name_id,
@@ -40,6 +44,7 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
         }
     }
 
+    #[inline]
     fn value(value: &Value) -> &String {
         match value {
             Value::Attribute(Attribute { value, .. }) => value,
@@ -47,6 +52,7 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
         }
     }
 
+    #[inline]
     fn value_mut(value: &mut Value) -> &mut String {
         match value {
             Value::Attribute(Attribute { value, .. }) => value,
@@ -54,6 +60,7 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
         }
     }
 
+    #[inline]
     fn create(key: NameId, value: String) -> Value {
         Value::Attribute(Attribute {
             name_id: key,
@@ -61,6 +68,7 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
         })
     }
 
+    #[inline]
     fn update(value: &mut Value, new_value: String) -> Option<String> {
         match value {
             Value::Attribute(Attribute {

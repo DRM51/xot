@@ -1,20 +1,23 @@
 use crate::xmlvalue::{Namespace, Value, ValueCategory};
 use crate::{NamespaceId, Node, PrefixId, Xot};
 
-use super::core::{category_predicate, MutableNodeMap, NodeMap, ValueAdapter};
+use super::core::{MutableNodeMap, NodeMap, ValueAdapter};
 
 pub struct NamespaceAdapter {}
 
 impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
+    #[inline]
     fn matches(value: &Value) -> bool {
         matches!(value, Value::Namespace(_))
     }
 
-    fn children(xot: &Xot, node: Node) -> impl Iterator<Item = Node> + '_ {
-        xot.all_children(node)
-            .take_while(category_predicate(xot, ValueCategory::Namespace))
+    #[inline]
+    fn entries(xot: &Xot, node: Node) -> impl Iterator<Item = (Node, &Value)> + '_ {
+        xot.all_children_values(node)
+            .take_while(|(_, value)| value.value_category() == ValueCategory::Namespace)
     }
 
+    #[inline]
     fn insertion_point(xot: &Xot, node: Node) -> Option<Node> {
         let last_child = Self::children(xot, node).last();
         // if there is a last child, insert after it
@@ -25,6 +28,7 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
         None
     }
 
+    #[inline]
     fn key(value: &Value) -> PrefixId {
         match value {
             Value::Namespace(Namespace { prefix_id, .. }) => *prefix_id,
@@ -32,6 +36,7 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
         }
     }
 
+    #[inline]
     fn value(value: &Value) -> &NamespaceId {
         match value {
             Value::Namespace(Namespace { namespace_id, .. }) => namespace_id,
@@ -39,6 +44,7 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
         }
     }
 
+    #[inline]
     fn value_mut(value: &mut Value) -> &mut NamespaceId {
         match value {
             Value::Namespace(Namespace { namespace_id, .. }) => namespace_id,
@@ -46,6 +52,7 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
         }
     }
 
+    #[inline]
     fn create(key: PrefixId, value: NamespaceId) -> Value {
         Value::Namespace(Namespace {
             prefix_id: key,
@@ -53,6 +60,7 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
         })
     }
 
+    #[inline]
     fn update(value: &mut Value, new_value: NamespaceId) -> Option<NamespaceId> {
         match value {
             Value::Namespace(Namespace {

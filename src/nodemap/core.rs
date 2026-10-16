@@ -2,13 +2,18 @@
 
 use ahash::AHashMap;
 
-use crate::{xmlvalue::ValueCategory, Node, Value, Xot};
+use crate::{Node, Value, Xot};
 
 use super::entry::{Entry, OccupiedEntry, VacantEntry};
 
 pub trait ValueAdapter<K, V> {
     fn matches(value: &Value) -> bool;
-    fn children(xot: &Xot, parent: Node) -> impl Iterator<Item = Node> + '_;
+    // the nodes of the map with their values, in order
+    fn entries(xot: &Xot, parent: Node) -> impl Iterator<Item = (Node, &Value)> + '_;
+    #[inline]
+    fn children(xot: &Xot, parent: Node) -> impl Iterator<Item = Node> + '_ {
+        Self::entries(xot, parent).map(|(node, _)| node)
+    }
     // new node insertion point is either node whether it should be inserted after,
     // or if None, prepend in the beginning
     fn insertion_point(xot: &Xot, parent: Node) -> Option<Node>;
@@ -55,13 +60,18 @@ where
         A::children(self.xot, self.parent)
     }
 
+    fn entries(&self) -> impl Iterator<Item = (Node, &'a Value)> + '_ {
+        A::entries(self.xot, self.parent)
+    }
+
     /// Get the node representing the value in the map.
     ///
     /// This is an attribute or namespace node. This node has the
     /// element node as a parent, even though it's not in `xot.children(parent)`.
     pub fn get_node(&self, key: impl Into<K> + Copy) -> Option<Node> {
-        self.children()
-            .find(|&child| A::key(self.xot.value(child)) == key.into())
+        self.entries()
+            .find(|(_, value)| A::key(value) == key.into())
+            .map(|(node, _)| node)
     }
 
     /// Returns the number of entries in the map, also referred to as its 'length'.
@@ -78,8 +88,8 @@ where
 
     /// Return `true` if an equivalent to `key` exists in the map.
     pub fn contains_key(&self, key: impl Into<K> + Copy) -> bool {
-        for child in self.children() {
-            if A::key(self.xot.value(child)) == key.into() {
+        for (_, value) in self.entries() {
+            if A::key(value) == key.into() {
                 return true;
             }
         }
@@ -88,12 +98,13 @@ where
 
     /// Return a reference to the value stored for `key`, if it is present, else `None`.
     pub fn get(&self, key: impl Into<K> + Copy) -> Option<&'a V> {
-        let node = self.get_node(key)?;
-        Some(A::value(self.xot.value(node)))
+        self.entries()
+            .find(|(_, value)| A::key(value) == key.into())
+            .map(|(_, value)| A::value(value))
     }
 
     fn iter_value(&self) -> impl Iterator<Item = &'a Value> + '_ {
-        self.children().map(move |child| self.xot.value(child))
+        self.entries().map(|(_, value)| value)
     }
 
     /// An iterator visiting all key-value pairs in insertion order. The iterator element type is
@@ -172,13 +183,18 @@ where
         A::children(self.xot, self.parent)
     }
 
+    fn entries(&self) -> impl Iterator<Item = (Node, &Value)> + '_ {
+        A::entries(self.xot, self.parent)
+    }
+
     /// Get the node representing the value in the map.
     ///
     /// This is an attribute or namespace node. This node has the
     /// element node as a parent, even though it's not in `xot.children(parent)`.
     pub fn get_node(&self, key: impl Into<K> + Copy) -> Option<Node> {
-        self.children()
-            .find(|&child| A::key(self.xot.value(child)) == key.into())
+        self.entries()
+            .find(|(_, value)| A::key(value) == key.into())
+            .map(|(node, _)| node)
     }
 
     /// Returns the number of entries in the map, also referred to as its 'length'.
@@ -195,8 +211,8 @@ where
 
     /// Return `true` if an equivalent to `key` exists in the map.
     pub fn contains_key(&self, key: impl Into<K> + Copy) -> bool {
-        for child in self.children() {
-            if A::key(self.xot.value(child)) == key.into() {
+        for (_, value) in self.entries() {
+            if A::key(value) == key.into() {
                 return true;
             }
         }
@@ -205,12 +221,13 @@ where
 
     /// Return a reference to the value stored for `key`, if it is present, else `None`.
     pub fn get(&self, key: impl Into<K> + Copy) -> Option<&V> {
-        let node = self.get_node(key)?;
-        Some(A::value(self.xot.value(node)))
+        self.entries()
+            .find(|(_, value)| A::key(value) == key.into())
+            .map(|(_, value)| A::value(value))
     }
 
     fn iter_value(&'a self) -> impl Iterator<Item = &'a Value> + 'a {
-        self.children().map(move |child| self.xot.value(child))
+        self.entries().map(|(_, value)| value)
     }
 
     /// An iterator visiting all key-value pairs in insertion order. The iterator element type is
@@ -365,13 +382,6 @@ where
             None => Entry::Vacant(VacantEntry::new(self, key.into())),
         }
     }
-}
-
-pub(crate) fn category_predicate(
-    xot: &Xot,
-    category: ValueCategory,
-) -> impl Fn(&Node) -> bool + '_ {
-    move |node| xot.value(*node).value_category() == category
 }
 
 #[cfg(test)]

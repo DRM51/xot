@@ -1,7 +1,7 @@
-use crate::arena::{NodeEdge as ArenaNodeEdge, NodeId};
+use crate::arena::{self, NodeEdge as ArenaNodeEdge, NodeId};
 use crate::error::Error;
 use crate::levelorder::{level_order_traverse, LevelOrder};
-use crate::nodemap::{category_predicate, Attributes, Namespaces};
+use crate::nodemap::{Attributes, Namespaces};
 use crate::output::NamespaceDeclarations;
 use crate::xmlvalue::{Value, ValueCategory, ValueType};
 use crate::xotdata::{Node, Xot};
@@ -293,6 +293,7 @@ impl Xot {
     /// assert_eq!(xot.to_string(root).unwrap(), "<p/>");
     /// assert!(xot.is_removed(text));
     /// ```
+    #[inline]
     pub fn is_removed(&self, node: Node) -> bool {
         self.arena.is_removed(node.get())
     }
@@ -314,26 +315,43 @@ impl Xot {
     /// assert_eq!(xot.parent(p), Some(root));
     /// assert_eq!(xot.parent(root), None);
     /// ```
+    #[inline]
     pub fn parent(&self, node: Node) -> Option<Node> {
         self.arena.parent(node.get()).map(Node::new)
     }
 
+    #[inline]
     pub(crate) fn all_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         self.arena.children(node.get()).map(Node::new)
     }
 
-    pub(crate) fn abnormal_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
+    /// The children with their values, namespace and attribute nodes
+    /// included; each child's value comes with it, as [`Xot::value`] gives
+    /// it.
+    #[inline]
+    pub(crate) fn all_children_values(
+        &self,
+        node: Node,
+    ) -> impl Iterator<Item = (Node, &Value)> + '_ {
         self.arena
-            .children(node.get())
-            .take_while(|n| !self.arena.get(*n).is_normal())
-            .map(Node::new)
+            .children_data(node.get())
+            .map(|(node_id, value)| (Node::new(node_id), arena::live(value)))
     }
 
+    #[inline]
+    pub(crate) fn abnormal_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
+        self.arena
+            .children_data(node.get())
+            .take_while(|(_, value)| !arena::live(*value).is_normal())
+            .map(|(node_id, _)| Node::new(node_id))
+    }
+
+    #[inline]
     pub(crate) fn normal_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         self.arena
-            .children(node.get())
-            .skip_while(|n| !self.arena.get(*n).is_normal())
-            .map(Node::new)
+            .children_data(node.get())
+            .skip_while(|(_, value)| !arena::live(*value).is_normal())
+            .map(|(node_id, _)| Node::new(node_id))
     }
 
     /// Attributes accessor.
@@ -421,9 +439,10 @@ impl Xot {
 
     /// Access the attribute nodes directly.
     pub fn attribute_nodes(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        self.all_children(node)
-            .skip_while(category_predicate(self, ValueCategory::Namespace))
-            .take_while(category_predicate(self, ValueCategory::Attribute))
+        self.all_children_values(node)
+            .skip_while(|(_, value)| value.value_category() == ValueCategory::Namespace)
+            .take_while(|(_, value)| value.value_category() == ValueCategory::Attribute)
+            .map(|(node, _)| node)
     }
 
     /// Get first child.
@@ -439,10 +458,20 @@ impl Xot {
     /// assert_eq!(xot.first_child(p), Some(text));
     /// assert_eq!(xot.first_child(text), None);
     /// ```
+    #[inline]
     pub fn first_child(&self, node: Node) -> Option<Node> {
-        self.normal_children(node).next()
+        // the first of `normal_children`, in a loop of its own so that the
+        // walk keeps its place in registers
+        let mut children = self.arena.children_data(node.get());
+        loop {
+            let (node_id, value) = children.next()?;
+            if arena::live(value).is_normal() {
+                return Some(Node::new(node_id));
+            }
+        }
     }
 
+    #[inline]
     pub(crate) fn internal_first_child(&self, node: Node) -> Option<Node> {
         Some(Node::new(self.arena.first_child(node.get())?))
     }
@@ -450,6 +479,7 @@ impl Xot {
     /// Get last child.
     ///
     /// Returns [`None`] if there are no children.
+    #[inline]
     pub fn last_child(&self, node: Node) -> Option<Node> {
         let last_child = self.arena.last_child(node.get())?;
         if self.arena.get(last_child).is_normal() {
@@ -459,6 +489,7 @@ impl Xot {
         }
     }
 
+    #[inline]
     pub(crate) fn internal_last_child(&self, node: Node) -> Option<Node> {
         Some(Node::new(self.arena.last_child(node.get())?))
     }
@@ -480,6 +511,7 @@ impl Xot {
     /// let b = xot.next_sibling(a).unwrap();
     /// assert_eq!(xot.next_sibling(b), None);
     /// ```
+    #[inline]
     pub fn next_sibling(&self, node: Node) -> Option<Node> {
         let current_category = self.arena.get(node.get()).value_category();
         let next_sibling = self.arena.next_sibling(node.get())?;
@@ -490,6 +522,7 @@ impl Xot {
         Some(Node::new(next_sibling))
     }
 
+    #[inline]
     pub(crate) fn internal_next_sibling(&self, node: Node) -> Option<Node> {
         Some(Node::new(self.arena.next_sibling(node.get())?))
     }
@@ -497,6 +530,7 @@ impl Xot {
     /// Get previous sibling.
     ///
     /// Returns [`None`] if there is no previous sibling.
+    #[inline]
     pub fn previous_sibling(&self, node: Node) -> Option<Node> {
         let current_category = self.arena.get(node.get()).value_category();
         let previous_sibling = self.arena.previous_sibling(node.get())?;
@@ -507,6 +541,7 @@ impl Xot {
         Some(Node::new(previous_sibling))
     }
 
+    #[inline]
     pub(crate) fn internal_previous_sibling(&self, node: Node) -> Option<Node> {
         Some(Node::new(self.arena.previous_sibling(node.get())?))
     }
@@ -527,6 +562,7 @@ impl Xot {
     /// let ancestors = xot.ancestors(c).collect::<Vec<_>>();
     /// assert_eq!(ancestors, vec![c, b, a, root]);
     /// ```
+    #[inline]
     pub fn ancestors(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         self.arena.ancestors(node.get()).map(Node::new)
     }
@@ -546,6 +582,7 @@ impl Xot {
     ///
     /// assert_eq!(children, vec![a, b]);
     /// ```
+    #[inline]
     pub fn children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         self.normal_children(node)
     }
@@ -603,14 +640,17 @@ impl Xot {
         })
     }
 
+    #[inline]
     fn normal_filter(&self) -> impl Fn(&NodeId) -> bool + '_ {
         |node_id| self.arena.get(*node_id).is_normal()
     }
 
+    #[inline]
     fn normal_node_filter(&self) -> impl Fn(Node) -> bool + '_ {
         move |node| self.arena.get(node.get()).is_normal()
     }
 
+    #[inline]
     fn normal_edge_filter(&self) -> impl Fn(&ArenaNodeEdge) -> bool + '_ {
         move |edge| {
             let node_id = match edge {
@@ -621,6 +661,7 @@ impl Xot {
         }
     }
 
+    #[inline]
     fn category_filter(&self, category: ValueCategory) -> impl Fn(&NodeId) -> bool + '_ {
         move |node_id| self.arena.get(*node_id).value_category() == category
     }
@@ -640,6 +681,7 @@ impl Xot {
     /// let descendants = xot.descendants(a).collect::<Vec<_>>();
     /// assert_eq!(descendants, vec![a, b, c]);
     /// ```
+    #[inline]
     pub fn descendants(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         self.arena
             .descendants(node.get())
@@ -652,6 +694,7 @@ impl Xot {
     /// This includes this one, and namespace and attribute nodes,
     /// all in document order, where namespace nodes come before
     /// attribute nodes and attribute nodes come before normal children
+    #[inline]
     pub fn all_descendants(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         self.arena.descendants(node.get()).map(Node::new)
     }
@@ -693,6 +736,7 @@ impl Xot {
     /// let siblings = xot.following_siblings(b).collect::<Vec<_>>();
     /// assert_eq!(siblings, vec![b, c]);
     /// ```
+    #[inline]
     pub fn following_siblings(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         let current_category = self.arena.get(node.get()).value_category();
         self.arena
@@ -702,6 +746,7 @@ impl Xot {
     }
 
     /// Iterator over the preceding siblings of this node.
+    #[inline]
     pub fn preceding_siblings(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         let current_category = self.arena.get(node.get()).value_category();
         self.arena
@@ -820,6 +865,7 @@ impl Xot {
     ///  xot::NodeEdge::End(a),
     /// ]);
     /// ```
+    #[inline]
     pub fn traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
         self.arena
             .traverse(node.get())
@@ -831,6 +877,7 @@ impl Xot {
     }
 
     /// Traverse nodes, including namespace and attribute nodes.
+    #[inline]
     pub fn all_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
         self.arena.traverse(node.get()).map(|edge| match edge {
             ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
@@ -844,6 +891,7 @@ impl Xot {
     ///
     /// Note that you still have to start with a top-level node, it just traverses through
     /// its descendants in a reverse order.
+    #[inline]
     pub fn reverse_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
         self.arena
             .reverse_traverse(node.get())
@@ -857,6 +905,7 @@ impl Xot {
     /// Traverse nodes, including namespace and attribute nodes, in reverse order.
     ///
     /// This is like [`Xot::all_traverse`] but includes namespace and
+    #[inline]
     pub fn reverse_all_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
         self.arena
             .reverse_traverse(node.get())

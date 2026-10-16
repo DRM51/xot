@@ -65,6 +65,7 @@ impl Xot {
     }
 
     /// Get the [`ValueType`](crate::xmlvalue::ValueType) of a node.
+    #[inline]
     pub fn value_type(&self, node: Node) -> ValueType {
         self.value(node).value_type()
     }
@@ -130,6 +131,7 @@ impl Xot {
     /// assert!(!xot.is_document(doc_el));
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn is_document(&self, node: Node) -> bool {
         self.value_type(node) == ValueType::Document
     }
@@ -148,6 +150,7 @@ impl Xot {
     /// assert!(!xot.is_element(text_node));
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn is_element(&self, node: Node) -> bool {
         self.value_type(node) == ValueType::Element
     }
@@ -167,26 +170,31 @@ impl Xot {
     ///
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn is_text(&self, node: Node) -> bool {
         self.value_type(node) == ValueType::Text
     }
 
     /// Return true if node is a comment.
+    #[inline]
     pub fn is_comment(&self, node: Node) -> bool {
         self.value_type(node) == ValueType::Comment
     }
 
     /// Return true if node is a processing instruction.
+    #[inline]
     pub fn is_processing_instruction(&self, node: Node) -> bool {
         self.value_type(node) == ValueType::ProcessingInstruction
     }
 
     /// Return true if node is a namespace node.
+    #[inline]
     pub fn is_namespace_node(&self, node: Node) -> bool {
         self.value_type(node) == ValueType::Namespace
     }
 
     /// Return true if node is an attribute node.
+    #[inline]
     pub fn is_attribute_node(&self, node: Node) -> bool {
         self.value_type(node) == ValueType::Attribute
     }
@@ -212,6 +220,7 @@ impl Xot {
     ///
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn text(&self, node: Node) -> Option<&Text> {
         let xml_node = self.value(node);
         if let Value::Text(text) = xml_node {
@@ -237,6 +246,7 @@ impl Xot {
     ///
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn text_str(&self, node: Node) -> Option<&str> {
         self.text(node).map(|n| n.get())
     }
@@ -263,6 +273,7 @@ impl Xot {
     /// assert_eq!(xot.to_string(root)?, "<doc>New text</doc>");
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn text_mut(&mut self, node: Node) -> Option<&mut Text> {
         let xml_node = self.value_mut(node);
         if let Value::Text(text) = xml_node {
@@ -299,6 +310,7 @@ impl Xot {
     ///
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn element(&self, node: Node) -> Option<&Element> {
         let xml_node = self.value(node);
         if let Value::Element(element) = xml_node {
@@ -328,6 +340,7 @@ impl Xot {
     ///
     /// # Ok::<(), xot::Error>(())
     /// ```
+    #[inline]
     pub fn element_mut(&mut self, node: Node) -> Option<&mut Element> {
         let xml_node = self.value_mut(node);
         if let Value::Element(element) = xml_node {
@@ -451,6 +464,7 @@ impl Xot {
     }
 
     /// If this node's value is a comment, return a reference to it.
+    #[inline]
     pub fn comment(&self, node: Node) -> Option<&Comment> {
         let xml_node = self.value(node);
         if let Value::Comment(comment) = xml_node {
@@ -461,11 +475,13 @@ impl Xot {
     }
 
     /// If this node's value is a comment, return a reference to the string.
+    #[inline]
     pub fn comment_str(&self, node: Node) -> Option<&str> {
         self.comment(node).map(|n| n.get())
     }
 
     /// If this node's value is a comment, return a mutable reference to it.
+    #[inline]
     pub fn comment_mut(&mut self, node: Node) -> Option<&mut Comment> {
         let xml_node = self.value_mut(node);
         if let Value::Comment(comment) = xml_node {
@@ -476,6 +492,7 @@ impl Xot {
     }
 
     /// If this node's value is a processing instruction, return a reference to it.
+    #[inline]
     pub fn processing_instruction(&self, node: Node) -> Option<&ProcessingInstruction> {
         let xml_node = self.value(node);
         if let Value::ProcessingInstruction(pi) = xml_node {
@@ -486,6 +503,7 @@ impl Xot {
     }
 
     /// If this node's value is a processing instruction, return a mutable reference to it.
+    #[inline]
     pub fn processing_instruction_mut(&mut self, node: Node) -> Option<&mut ProcessingInstruction> {
         let xml_node = self.value_mut(node);
         if let Value::ProcessingInstruction(pi) = xml_node {
@@ -496,6 +514,7 @@ impl Xot {
     }
 
     /// Access namespace node value
+    #[inline]
     pub fn namespace_node(&self, node: Node) -> Option<&Namespace> {
         let xml_node = self.value(node);
         if let Value::Namespace(namespace) = xml_node {
@@ -506,6 +525,7 @@ impl Xot {
     }
 
     /// Manipulate namespace node value
+    #[inline]
     pub fn namespace_node_mut(&mut self, node: Node) -> Option<&mut Namespace> {
         let xml_node = self.value_mut(node);
         if let Value::Namespace(namespace) = xml_node {
@@ -516,6 +536,7 @@ impl Xot {
     }
 
     /// Access attribute node value
+    #[inline]
     pub fn attribute_node(&self, node: Node) -> Option<&Attribute> {
         let xml_node = self.value(node);
         if let Value::Attribute(attribute) = xml_node {
@@ -526,6 +547,7 @@ impl Xot {
     }
 
     /// Manipulate attribute node value
+    #[inline]
     pub fn attribute_node_mut(&mut self, node: Node) -> Option<&mut Attribute> {
         let xml_node = self.value_mut(node);
         if let Value::Attribute(attribute) = xml_node {

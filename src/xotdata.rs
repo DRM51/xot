@@ -14,6 +14,10 @@ pub(crate) const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
 
 /// A node in the XML tree.
 /// This is a lightweight value and can be copied.
+///
+/// A node takes 8 bytes: the position of the node in its [`Xot`] and a
+/// generation. A node made later at the position of a removed node has
+/// another generation, so the two are never equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Node(NodeId);
 
@@ -29,10 +33,17 @@ impl Node {
     }
 }
 
+/// The node at the position of an indextree node id, with the generation 0.
+///
+/// Xot used to keep its nodes in an indextree arena, and this conversion is
+/// kept so that code that uses it still compiles. As that arena was not
+/// public, an indextree node id never referred to a node of a [`Xot`].
+///
+/// Panics if the position does not fit in a `u32`.
 impl From<indextree::NodeId> for Node {
     #[inline]
     fn from(node_id: indextree::NodeId) -> Self {
-        Node(node_id)
+        Node(NodeId::from_indextree(node_id))
     }
 }
 

@@ -308,6 +308,56 @@
   last child and gives the children in reverse order: `c` and then `b` for
   the first element, and `b` for the second.
 
+- A `Node` of a removed node compared equal to every later node in its slot
+  once the slot had been taken 32,767 times, as indextree's stamp stops
+  changing there. A slot now has a `u32` generation, one more for each node
+  that takes it, and a slot whose generation reaches `u32::MAX` is not used
+  again, so a removed node never compares equal to a later one.
+
+### Optimizations
+
+- Xot keeps its nodes in an arena of its own instead of indextree's. A node
+  takes 64 bytes instead of 128: its value, the positions of its parent, its
+  siblings and its first and last child as `u32`, and a `u32` generation. The
+  arena grows in chunks of 65,536 nodes (4 MiB) that never move, so growing it
+  no longer copies the nodes or holds two copies of them for a moment, as the
+  vector that doubled did. A `Node` takes 8 bytes instead of 16. On a
+  generated document of 25 megabytes with 2.0M nodes, the heap after parsing
+  takes 130.9 MiB instead of 262.9 MiB, the heap peaks at 302.0 MiB instead of
+  530.0 MiB while parsing, parsing peaks at 429.5 MiB of resident memory
+  instead of 617.6 MiB, and it takes 389 ms instead of 453 ms. Two copies of
+  the document with `clone_node` and their serialization peak at 800.4 MiB of
+  resident memory instead of 1306.4 MiB, with 436.7 MiB of heap instead of
+  1140.7 MiB. Walks up through parents take about 0.6 ns a node more, and
+  removing a node 2 to 6 ns more, as a removed node keeps the generations of
+  the nodes it refers to.
+
+- Attribute and namespace maps, and `first_child`, read each node once as
+  they go through children, and the small accessors are inline, so that a
+  caller in another crate reads a node once for several of them.
+
+### Other changes
+
+- `Node` is the position of the node and its generation, so its debug text
+  and its hash change: `Node(NodeId { index1: 1, generation: 0 })`.
+
+- `impl From<indextree::NodeId> for Node` stays, for code that uses it: it
+  gives the node at the position of the id, with the generation 0. As the
+  arena of a `Xot` was never public, an indextree id never referred to one of
+  its nodes. indextree stays a dependency for this and for
+  `Error::NodeError`.
+
+- A `Xot` holds at most 2^32 - 1 nodes; one more panics with "Too many nodes
+  in the arena".
+
+- A change through the `Node` of a removed node whose slot a later node took
+  since, such as `append(parent, node)`, changes the later node, as before,
+  but navigation now gives the `Node` of that later node, where it gave the
+  `Node` of the removed one.
+
+- A panic that takes a cycle made with `insert_after` or `insert_before`,
+  then `element_unwrap` of a node in it, has another message.
+
 ## [0.31.2] - 2025-04-09
 
 ### Bugs fixed
