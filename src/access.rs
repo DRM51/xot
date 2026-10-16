@@ -574,12 +574,37 @@ impl Xot {
     }
 
     /// Iterator over the child nodes of this node, in reverse order.
+    ///
+    /// Namespace and attribute nodes aren't considered child nodes, as in
+    /// [`Xot::children`].
+    ///
+    /// ```rust
+    /// let mut xot = xot::Xot::new();
+    /// let root = xot.parse(r#"<p x="1"><a/><b/></p>"#).unwrap();
+    /// let p = xot.document_element(root).unwrap();
+    /// let a = xot.first_child(p).unwrap();
+    /// let b = xot.next_sibling(a).unwrap();
+    /// let children = xot.reverse_children(p).collect::<Vec<_>>();
+    ///
+    /// assert_eq!(children, vec![b, a]);
+    /// ```
     pub fn reverse_children(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        node.get()
-            .children(self.arena())
-            .rev()
-            .take_while(|n| self.arena[*n].get().is_normal())
-            .map(Node::new)
+        // From the last child back to the first, stopping at the namespace
+        // and attribute nodes before the children. Not the reverse of
+        // indextree's `Children`: its `next_back` (indextree 4.7.2) moves
+        // the front of the iterator instead of the back, so it repeats the
+        // last child without end.
+        let mut next = self.arena[node.get()].last_child();
+        std::iter::from_fn(move || {
+            let current = next?;
+            let current_node = &self.arena[current];
+            if !current_node.get().is_normal() {
+                next = None;
+                return None;
+            }
+            next = current_node.previous_sibling();
+            Some(Node::new(current))
+        })
     }
 
     fn normal_filter(&self) -> impl Fn(&indextree::NodeId) -> bool + '_ {

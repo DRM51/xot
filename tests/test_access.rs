@@ -1,4 +1,4 @@
-use xot::Xot;
+use xot::{Node, Xot};
 
 #[test]
 fn test_text_content_str() {
@@ -249,6 +249,153 @@ fn test_children() {
     let doc = xot.document_element(doc).unwrap();
     let children = xot.children(doc).collect::<Vec<_>>();
     assert_eq!(children.len(), 1);
+}
+
+/// `reverse_children`, cut off one node after the number of children, so
+/// that an iterator that repeats a child fails the test instead of never
+/// ending.
+fn reverse_children(xot: &Xot, node: Node) -> Vec<Node> {
+    let count = xot.children(node).count();
+    xot.reverse_children(node).take(count + 1).collect()
+}
+
+#[test]
+fn test_reverse_children_none() {
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<doc/>"#).unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![]);
+}
+
+#[test]
+fn test_reverse_children_one() {
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<doc><a/></doc>"#).unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    let a = xot.first_child(doc).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![a]);
+}
+
+#[test]
+fn test_reverse_children_two() {
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<doc><a/>text</doc>"#).unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    let a = xot.first_child(doc).unwrap();
+    let text = xot.next_sibling(a).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![text, a]);
+}
+
+#[test]
+fn test_reverse_children_three() {
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<doc><a/>text<!--comment--></doc>"#).unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    let a = xot.first_child(doc).unwrap();
+    let text = xot.next_sibling(a).unwrap();
+    let comment = xot.next_sibling(text).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![comment, text, a]);
+}
+
+#[test]
+fn test_reverse_children_with_namespace_and_attribute() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<doc xmlns:p="urn:p" p:x="1" y="2"><a/>text<?pi data?></doc>"#)
+        .unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    let a = xot.first_child(doc).unwrap();
+    let text = xot.next_sibling(a).unwrap();
+    let pi = xot.next_sibling(text).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![pi, text, a]);
+}
+
+#[test]
+fn test_reverse_children_one_with_attribute() {
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<doc foo="FOO">bar</doc>"#).unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    let bar = xot.first_child(doc).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![bar]);
+}
+
+#[test]
+fn test_reverse_children_one_with_namespace() {
+    let mut xot = Xot::new();
+    let doc = xot.parse(r#"<doc xmlns:foo="FOO">bar</doc>"#).unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    let bar = xot.first_child(doc).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![bar]);
+}
+
+#[test]
+fn test_reverse_children_none_with_namespace_and_attribute() {
+    let mut xot = Xot::new();
+    let doc = xot
+        .parse(r#"<doc xmlns:p="urn:p" p:x="1" y="2"/>"#)
+        .unwrap();
+    let doc = xot.document_element(doc).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![]);
+    for attribute in xot.attribute_nodes(doc).collect::<Vec<_>>() {
+        assert_eq!(reverse_children(&xot, attribute), vec![]);
+    }
+}
+
+#[test]
+fn test_reverse_children_document() {
+    let mut xot = Xot::new();
+    let root = xot
+        .parse(r#"<?pi data?><!--before--><doc><a/></doc><!--after-->"#)
+        .unwrap();
+    let pi = xot.first_child(root).unwrap();
+    let before = xot.next_sibling(pi).unwrap();
+    let doc = xot.next_sibling(before).unwrap();
+    let after = xot.next_sibling(doc).unwrap();
+    assert_eq!(reverse_children(&xot, root), vec![after, doc, before, pi]);
+}
+
+#[test]
+fn test_reverse_children_is_children_reversed() {
+    let mut xot = Xot::new();
+    let root = xot
+        .parse(concat!(
+            r#"<?pi?><doc xmlns="urn:d" xmlns:p="urn:p" a="1">"#,
+            r#"<p:a p:b="2">x<b/>y</p:a><!--c--><c xmlns:q="urn:q"><d/></c>z"#,
+            r#"</doc><!--after-->"#
+        ))
+        .unwrap();
+    for node in xot.all_descendants(root) {
+        let mut children = xot.children(node).collect::<Vec<_>>();
+        children.reverse();
+        assert_eq!(reverse_children(&xot, node), children);
+    }
+}
+
+#[test]
+fn test_reverse_children_after_changes() {
+    let mut xot = Xot::new();
+    let doc = xot.add_name("doc");
+    let a = xot.add_name("a");
+    let x = xot.add_name("x");
+    let p = xot.add_prefix("p");
+    let ns = xot.add_namespace("urn:p");
+    let doc = xot.new_element(doc);
+    let first = xot.new_text("first");
+    let second = xot.new_element(a);
+    let third = xot.new_comment("third");
+    xot.append(doc, second).unwrap();
+    xot.prepend(doc, first).unwrap();
+    xot.insert_after(second, third).unwrap();
+    // the attribute and namespace nodes go before the children
+    xot.set_attribute(doc, x, "1");
+    xot.set_namespace(doc, p, ns);
+    assert_eq!(reverse_children(&xot, doc), vec![third, second, first]);
+    xot.remove(second).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![third, first]);
+    xot.detach(third).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![first]);
+    xot.remove(first).unwrap();
+    assert_eq!(reverse_children(&xot, doc), vec![]);
 }
 
 #[test]

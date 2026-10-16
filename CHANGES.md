@@ -299,6 +299,15 @@
   `ParseError::InvalidCloseTag` with the span of the name in the end tag,
   the error for an end tag that does not match its start tag.
 
+- `Xot::reverse_children` repeated the last child without end when the node
+  had two or more children, its namespace and attribute nodes counted: for
+  `<a><b/><c/></a>` it gave `c`, `c`, `c` and so on, and for
+  `<a x="1"><b/></a>` it gave `b`, `b` and so on. It took the reverse of
+  indextree's `Children` iterator, whose `next_back` (indextree 4.7.2) moves
+  the front of the iterator instead of the back. It now walks back from the
+  last child and gives the children in reverse order: `c` and then `b` for
+  the first element, and `b` for the second.
+
 ## [0.31.2] - 2025-04-09
 
 ### Bugs fixed
