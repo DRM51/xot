@@ -158,6 +158,7 @@ pub(crate) fn live<T>(data: Option<&T>) -> &T {
 
 /// A slot: a node, or a free slot that a later node can take.
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 struct Slot<T> {
     /// The data of the node, or the free list entry of a removed node.
     data: SlotData<T>,
@@ -171,6 +172,7 @@ struct Slot<T> {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 enum SlotData<T> {
     /// A node and its data.
     Live(T),
@@ -179,6 +181,7 @@ enum SlotData<T> {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 struct FreeSlot {
     /// The position plus one of the next slot of the free list, 0 for none.
     next_free: u32,
@@ -498,6 +501,41 @@ impl<T> Arena<T> {
         match &mut self.slot_mut(node_id.index1.get()).data {
             SlotData::Live(data) => data,
             SlotData::Free(_) => unreachable!("Try to access a freed node"),
+        }
+    }
+
+    /// The data of the nodes in the slots of `a` and of `b`, to change both,
+    /// as [`Arena::get_mut`] gives each; `None` if the two have one slot.
+    ///
+    /// Panics if either node is removed.
+    pub(crate) fn get_pair_mut(&mut self, a: NodeId, b: NodeId) -> Option<(&mut T, &mut T)> {
+        let (a, b) = (a.index1.get() - 1, b.index1.get() - 1);
+        if a == b {
+            return None;
+        }
+        // the chunk of each and the position in it
+        let (chunk_a, in_a) = ((a >> CHUNK_BITS) as usize, (a & CHUNK_MASK) as usize);
+        let (chunk_b, in_b) = ((b >> CHUNK_BITS) as usize, (b & CHUNK_MASK) as usize);
+        // split the slots, or the chunks, between the two
+        let (slot_a, slot_b) = if chunk_a == chunk_b {
+            let chunk = &mut self.chunks[chunk_a];
+            if in_a < in_b {
+                let (low, high) = chunk.split_at_mut(in_b);
+                (&mut low[in_a], &mut high[0])
+            } else {
+                let (low, high) = chunk.split_at_mut(in_a);
+                (&mut high[0], &mut low[in_b])
+            }
+        } else if chunk_a < chunk_b {
+            let (low, high) = self.chunks.split_at_mut(chunk_b);
+            (&mut low[chunk_a][in_a], &mut high[0][in_b])
+        } else {
+            let (low, high) = self.chunks.split_at_mut(chunk_a);
+            (&mut high[0][in_a], &mut low[chunk_b][in_b])
+        };
+        match (&mut slot_a.data, &mut slot_b.data) {
+            (SlotData::Live(data_a), SlotData::Live(data_b)) => Some((data_a, data_b)),
+            _ => unreachable!("Try to access a freed node"),
         }
     }
 
@@ -1213,6 +1251,39 @@ impl<T> Arena<T> {
         }
     }
 
+    /// The traversal of [`Arena::traverse`], before its first edge, for
+    /// [`Arena::traverse_step`].
+    pub(crate) fn traverse_start(&self, node_id: NodeId) -> TraverseState {
+        TraverseState {
+            root: node_id,
+            next: Some(Edge::Start(Link::known(node_id))),
+        }
+    }
+
+    /// The next edge of a traversal and the data of its node, `None` for a
+    /// removed node ([`live`] gives the data as [`Arena::get`] does), read
+    /// from one slot.
+    ///
+    /// The state holds no borrow of the arena, so that the caller can change
+    /// the arena between two steps. A step reads the fields of the node it
+    /// comes to then, so the edges are those of [`Arena::traverse`] as long
+    /// as the changes leave alone the nodes the traversal has still to visit,
+    /// the fields that lead to them and the generations of the slots it
+    /// refers to. [`Arena::new_node`] takes a free slot, and the nodes of a
+    /// tree refer to no free slot, so new nodes change none of these.
+    #[inline]
+    pub(crate) fn traverse_step(
+        &self,
+        state: &mut TraverseState,
+    ) -> Option<(NodeEdge, Option<&T>)> {
+        let (edge, slot) = traverse_next(&self.chunks, state.root, &mut state.next)?;
+        let data = match &slot.data {
+            SlotData::Live(data) => Some(data),
+            SlotData::Free(_) => None,
+        };
+        Some((edge, data))
+    }
+
     /// The edges of the node and its descendants, in reverse document order.
     pub(crate) fn reverse_traverse(&self, node_id: NodeId) -> impl Iterator<Item = NodeEdge> + '_ {
         ReverseTraverse {
@@ -1250,6 +1321,29 @@ impl<T> Arena<T> {
             Link::NONE
         };
         Siblings::<'_, T, PREVIOUS>::new(&self.chunks, Link::known(node_id), tail)
+    }
+}
+
+#[cfg(test)]
+impl<T: PartialEq + std::fmt::Debug> Arena<T> {
+    /// The first difference between the slots of the two arenas (the data,
+    /// the fields and the generation of each) and their free lists, if any.
+    pub(crate) fn slot_difference(&self, other: &Self) -> Option<String> {
+        let counts = |arena: &Self| (arena.len, arena.first_free, arena.last_free);
+        if counts(self) != counts(other) {
+            return Some(format!(
+                "slots and free list {:?} against {:?}",
+                counts(self),
+                counts(other)
+            ));
+        }
+        self.chunks
+            .iter()
+            .flatten()
+            .zip(other.chunks.iter().flatten())
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .map(|(position, (a, b))| format!("slot {position}: {a:?} against {b:?}"))
     }
 }
 
@@ -1477,6 +1571,8 @@ struct Traverse<'a, T> {
 impl<T> Iterator for Traverse<'_, T> {
     type Item = NodeEdge;
 
+    // the steps of `traverse_next`, without the slot: with a call of that,
+    // serializing a document took 1.01 times as long
     #[inline(always)]
     fn next(&mut self) -> Option<NodeEdge> {
         match self.next.take()? {
@@ -1514,6 +1610,61 @@ impl<T> Iterator for Traverse<'_, T> {
                 };
                 Some(NodeEdge::End(node_id))
             }
+        }
+    }
+}
+
+/// A traversal that [`Arena::traverse_step`] takes one edge at a time: the
+/// edges of [`Traverse`], without a borrow of the arena.
+#[derive(Clone, Copy)]
+pub(crate) struct TraverseState {
+    root: NodeId,
+    next: Option<Edge>,
+}
+
+/// The edge of a traversal of `root` that `next` stands for, and the slot of
+/// its node, which it reads; `next` becomes the edge after it, or `None` at
+/// the end: a step of [`Traverse`].
+#[inline(always)]
+fn traverse_next<'a, T>(
+    chunks: &'a [Vec<Slot<T>>],
+    root: NodeId,
+    next: &mut Option<Edge>,
+) -> Option<(NodeEdge, &'a Slot<T>)> {
+    match next.take()? {
+        Edge::Start(link) => {
+            let index1 = NonZeroU32::new(link.index1)?;
+            let slot = slot_in(chunks, index1.get());
+            let node_id = NodeId {
+                index1,
+                generation: link.generation.unwrap_or(slot.generation),
+            };
+            *next = Some(if slot.link[FIRST] != 0 {
+                Edge::Start(slot.link_to(FIRST))
+            } else {
+                Edge::End(Link::known(node_id))
+            });
+            Some((NodeEdge::Start(node_id), slot))
+        }
+        Edge::End(link) => {
+            let index1 = NonZeroU32::new(link.index1)?;
+            let slot = slot_in(chunks, index1.get());
+            let node_id = NodeId {
+                index1,
+                generation: link.generation.unwrap_or(slot.generation),
+            };
+            *next = if node_id == root {
+                None
+            } else if slot.link[NEXT] != 0 {
+                Some(Edge::Start(slot.link_to(NEXT)))
+            } else if slot.link[PARENT] != 0 {
+                Some(Edge::End(slot.link_to(PARENT)))
+            } else {
+                // only if the tree was changed during the traversal;
+                // indextree stops then
+                None
+            };
+            Some((NodeEdge::End(node_id), slot))
         }
     }
 }

@@ -367,6 +367,37 @@
   301 ms in the same runs); `Xot::parse_with_span_info` takes 0.66 times as
   long.
 
+- `Xot::clone_node` and `Xot::clone_with_prefixes` make each copy as they go
+  through the tree they copy, instead of collecting the start and the end of
+  each of its nodes in a vector first, which for a tree of 2.0M nodes took
+  48 MiB, and up to 72 MiB while it grew. A copy of a namespace, attribute,
+  element, comment or processing instruction node goes at the end of the
+  children of its new parent, without the checks of `Xot::append` and the
+  searches of the attribute and namespace maps, which a node made for a copy
+  cannot fail; a copied text joins a text before it, as before. Where a
+  namespace or attribute node comes after a node of another kind, or has the
+  prefix or name of one before it, as edits can leave them, it is copied
+  through the maps as before. The copies are made in the same order and take
+  the same slots as before. On a generated document of 25 megabytes with 2.0M
+  nodes, a copy of the document takes 39 ms instead of 108 ms (20 ns a node
+  instead of 55), with half the allocations, and the heap no longer goes above
+  what the copy keeps, where it went 48 MiB above it;
+  `Xot::clone_with_prefixes` of the elements under the document element takes
+  79 ns a node instead of 120. Two copies of the document and their
+  serialization peak at 446.9 MiB of resident memory instead of 538.6 MiB.
+
+- When a text is joined with the text next to it, as when a text is appended
+  after a text or put before or after one, or when the node between two texts
+  is moved away, detached, removed or unwrapped, the text that stays keeps its
+  string and the other text is added to it, instead of to a new string made
+  from copies of both; a text added before it that does not fit gets a string
+  of the joined length. A text that is appended is no longer copied first to
+  see whether it is joined. Appending a text after a text, as
+  `Xot::append_text` does, makes one allocation, for the string of the new
+  node, instead of three and a reallocation, and takes 63 ns instead of 91;
+  appending a new text to an element without one takes 34 ns instead of 49,
+  and detaching the element between two texts 37 ns instead of 96.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text

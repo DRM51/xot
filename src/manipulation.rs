@@ -1,8 +1,8 @@
+use crate::arena::{self, NodeEdge as ArenaNodeEdge};
 use crate::unpretty::remove_insignificant_whitespace;
 use crate::xotdata::{Node, Xot};
 use crate::{xmlname, MutableAttributes, MutableNamespaces, NamespaceId, PrefixId};
 
-use crate::access::NodeEdge;
 use crate::error::Error;
 use crate::id::NameId;
 use crate::xmlvalue::{Value, ValueCategory, ValueType};
@@ -600,28 +600,71 @@ impl Xot {
             }
         };
 
-        let edges = self.all_traverse(node).collect::<Vec<_>>();
-
+        // The edges of `all_traverse(node)`, taken one at a time: a copy
+        // takes a free slot, which is no part of the tree of `node`, so the
+        // walk reads that tree as it is. Each copy is made at the start edge
+        // of its node and put where `any_append` puts it.
+        let mut edges = self.arena.traverse_start(node.get());
         let mut current = top;
-        for open_close in edges {
-            match open_close {
-                NodeEdge::Start(node) => {
-                    let value = self.value(node);
-                    let value_type = value.value_type();
-                    if value_type == ValueType::Document {
-                        continue;
-                    }
-                    let new_node = self.new_node(value.clone());
-                    self.any_append(current, new_node).unwrap();
-                    if value_type == ValueType::Element {
-                        current = new_node;
+        // filters of the prefixes and the names of the namespace and
+        // attribute nodes that `current` has got without a check, until it
+        // gets a normal child
+        let mut namespace_keys = 0u64;
+        let mut attribute_keys = 0u64;
+        while let Some((edge, value)) = self.arena.traverse_step(&mut edges) {
+            let value = arena::live(value);
+            if let ArenaNodeEdge::End(_) = edge {
+                if matches!(value, Value::Element(_)) {
+                    current = self.parent(current).unwrap();
+                }
+                continue;
+            }
+            let copied = match value {
+                Value::Document => continue,
+                Value::Element(_) => Copied::Element,
+                Value::Text(_) => Copied::Text,
+                Value::Comment(_) | Value::ProcessingInstruction(_) => Copied::Other,
+                Value::Namespace(namespace) => Copied::Namespace(key_bit(namespace.prefix_id.0)),
+                Value::Attribute(attribute) => Copied::Attribute(key_bit(attribute.name_id.0)),
+            };
+            let new_node = self.new_node(value.clone());
+            match copied {
+                // `append` checks nothing that a new element, comment or
+                // processing instruction under an element or a document can
+                // fail, and changes no text
+                Copied::Element => {
+                    self.arena.append_fresh(current.get(), new_node.get());
+                    current = new_node;
+                    namespace_keys = 0;
+                    attribute_keys = 0;
+                }
+                Copied::Other => self.arena.append_fresh(current.get(), new_node.get()),
+                // a text joins the text before it, as with `append`
+                Copied::Text => {
+                    if !self.add_consolidate_text_nodes(new_node, self.last_child(current), None) {
+                        self.arena.append_fresh(current.get(), new_node.get());
                     }
                 }
-                NodeEdge::End(node) => {
-                    if self.value_type(node) != ValueType::Element {
-                        continue;
+                // a namespace node goes after the namespace nodes of an
+                // element, and an attribute after its namespace and attribute
+                // nodes, unless the element has one with the same key: when
+                // these are all the children so far and the filter has not
+                // seen the key, it goes at the end
+                Copied::Namespace(bit) => {
+                    if namespace_keys & bit == 0 && self.only_maps_before(current, true) {
+                        self.arena.append_fresh(current.get(), new_node.get());
+                    } else {
+                        self.any_append(current, new_node).unwrap();
                     }
-                    current = self.parent(current).unwrap();
+                    namespace_keys |= bit;
+                }
+                Copied::Attribute(bit) => {
+                    if attribute_keys & bit == 0 && self.only_maps_before(current, false) {
+                        self.arena.append_fresh(current.get(), new_node.get());
+                    } else {
+                        self.any_append(current, new_node).unwrap();
+                    }
+                    attribute_keys |= bit;
                 }
             }
         }
@@ -977,53 +1020,35 @@ impl Xot {
         if !self.text_consolidation {
             return false;
         }
-        let added_text = if let Value::Text(t) = self.value(node) {
-            Some(t.get().to_string())
-        } else {
-            None
-        };
-        if added_text.is_none() {
+        if !matches!(self.value(node), Value::Text(_)) {
             return false;
         }
-        let added_text = added_text.unwrap();
 
         // if consolidation is turned off, then we could have two adjacent
         // text nodes. Prefer to consolidate with the previous node.
-        let consolidated = if let Some(prev_node) = prev_node {
-            if let Value::Text(prev) = self.value_mut(prev_node) {
-                let mut s = prev.get().to_string();
-                s.push_str(&added_text);
-                prev.set(s);
+        if let Some(prev_node) = prev_node {
+            if matches!(self.value(prev_node), Value::Text(_)) {
+                // the previous node's text grows by the added text
+                self.join_texts(prev_node, node, false);
                 // remove the text node we wanted to insert as it's now consolidated
                 // we can always remove text nodes safely.
                 self.remove_dangerously(node);
-                true
-            } else {
-                false
+                return true;
             }
-        } else {
-            false
-        };
-        if consolidated {
-            return true;
         }
         // we couldn't consolidate with the previous node, try to consolidate
         // with the next node
         if let Some(next_node) = next_node {
-            if let Value::Text(next) = self.value_mut(next_node) {
-                let mut s = added_text;
-                s.push_str(next.get());
-                next.set(s);
+            if matches!(self.value(next_node), Value::Text(_)) {
+                // the next node's text grows by the added text before it
+                self.join_texts(next_node, node, true);
                 // remove the text node we wanted to insert as it's now consolidated
                 // we can always remove text nodes safely.
                 self.remove_dangerously(node);
-                true
-            } else {
-                false
+                return true;
             }
-        } else {
-            false
         }
+        false
     }
 
     fn remove_consolidate_text_nodes(
@@ -1034,27 +1059,93 @@ impl Xot {
         if !self.text_consolidation {
             return false;
         }
-        if prev_node.is_none() {
+        let (Some(prev_node), Some(next_node)) = (prev_node, next_node) else {
+            return false;
+        };
+        // both are read, so that either panics if it is removed
+        let prev_is_text = self.text(prev_node).is_some();
+        let next_is_text = self.text(next_node).is_some();
+        if !prev_is_text || !next_is_text {
             return false;
         }
-        let prev_node = prev_node.unwrap();
-        if next_node.is_none() {
-            return false;
-        }
-        let next_node = next_node.unwrap();
-        let prev_text = self.text(prev_node);
-        let next_text = self.text(next_node);
-        if prev_text.is_none() || next_text.is_none() {
-            return false;
-        }
-        let to_add = next_text.unwrap().get().to_string();
-
-        let prev_text_mut = self.text_mut(prev_node).unwrap();
-        let mut s = prev_text_mut.get().to_string();
-        s.push_str(&to_add);
-        prev_text_mut.set(s);
+        // the previous node's text grows by the next node's text
+        self.join_texts(prev_node, next_node, false);
         // this is guaranteed to be a text node
         self.remove_dangerously(next_node);
         true
     }
+
+    /// Add the text of the text node `from` to that of the text node `into`,
+    /// before it if `before`, else after it, in the string that `into` has
+    /// already; `from` keeps its text. If the two are in one slot, that text
+    /// is doubled, as when the text that was added was a copy.
+    ///
+    /// A text added after grows the string as `push_str` does, with room to
+    /// spare, as the copy that was joined before grew. Where a text added
+    /// before does not fit, the joined text gets a string of its length
+    /// only: the text after is mostly the longer one, and room to spare in
+    /// its string could take much more than the copy that was joined before.
+    fn join_texts(&mut self, into: Node, from: Node, before: bool) {
+        match self.arena.get_pair_mut(into.get(), from.get()) {
+            Some((Value::Text(into), Value::Text(from))) => {
+                if !before {
+                    into.text.push_str(&from.text);
+                } else if into.text.capacity() - into.text.len() >= from.text.len() {
+                    into.text.insert_str(0, &from.text);
+                } else {
+                    let mut joined = String::with_capacity(from.text.len() + into.text.len());
+                    joined.push_str(&from.text);
+                    joined.push_str(&into.text);
+                    into.text = joined;
+                }
+            }
+            Some(_) => unreachable!("Only text nodes are joined"),
+            None => {
+                if let Value::Text(text) = self.value_mut(into) {
+                    let copy = text.text.clone();
+                    text.text.push_str(&copy);
+                }
+            }
+        }
+    }
+
+    /// Whether the children of `parent` are all namespace nodes, or if not
+    /// `namespace`, namespace and attribute nodes, and `parent` is an
+    /// element: then [`Xot::any_append`] puts a namespace node, or an
+    /// attribute node, at the end of the children if `parent` has none with
+    /// its key. In a copy that `any_append` made, the namespace nodes of an
+    /// element come first among its children and its attribute nodes after
+    /// them, so the last child tells.
+    fn only_maps_before(&self, parent: Node, namespace: bool) -> bool {
+        if !self.is_element(parent) {
+            return false;
+        }
+        match self.arena.last_child(parent.get()) {
+            None => true,
+            Some(last_child) => match self.arena.get(last_child) {
+                Value::Namespace(_) => true,
+                Value::Attribute(_) => !namespace,
+                _ => false,
+            },
+        }
+    }
 }
+
+/// What [`Xot::clone_node`] copied, and so where the copy goes: for a
+/// namespace or an attribute node, with the bit of its key in a filter.
+enum Copied {
+    Element,
+    Text,
+    Other,
+    Namespace(u64),
+    Attribute(u64),
+}
+
+/// The bit of a prefix or name id in a filter of 64 bits.
+#[inline]
+fn key_bit(id: u16) -> u64 {
+    1 << (id % 64)
+}
+
+#[cfg(test)]
+mod tests;

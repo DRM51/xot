@@ -620,6 +620,146 @@ fn append_fresh_checks_its_arguments_with_debug_assertions() {
     }
 }
 
+/// The edges and the data that `traverse_step` gives for a traversal of
+/// `root`, taking one step after another.
+fn stepped(arena: &Arena<u32>, root: NodeId) -> Vec<(bool, (u32, u32), Option<u32>)> {
+    let mut state = arena.traverse_start(root);
+    let mut steps = Vec::new();
+    while let Some((edge, data)) = arena.traverse_step(&mut state) {
+        let (start, node_id) = match edge {
+            NodeEdge::Start(node_id) => (true, node_id),
+            NodeEdge::End(node_id) => (false, node_id),
+        };
+        steps.push((start, my_key(node_id), data.copied()));
+    }
+    steps
+}
+
+#[test]
+fn traverse_step_gives_the_edges_of_traverse_with_their_data() {
+    let mut rng = Rng::new(11);
+    for _ in 0..100 {
+        let mut arena = Arena::new();
+        let mut made = vec![arena.new_node(0)];
+        let mut live = made.clone();
+        for value in 1..200u32 {
+            if live.len() > 1 && rng.chance(15) {
+                // any node but the root, which is the first
+                let node = live[1 + rng.below(live.len() - 1)];
+                if rng.chance(50) {
+                    arena.remove(node);
+                    live.retain(|&h| h != node);
+                } else {
+                    let removed: Vec<NodeId> = arena.descendants(node).collect();
+                    arena.remove_subtree(node);
+                    live.retain(|h| !removed.contains(h));
+                }
+            } else {
+                let parent = live[rng.below(live.len())];
+                let node = arena.new_node(value);
+                arena.checked_append(parent, node).unwrap();
+                made.push(node);
+                live.push(node);
+            }
+        }
+        // every handle: live, removed, and removed with its slot taken again
+        for &node in &made {
+            let edges = my_edges(arena.traverse(node));
+            let steps = stepped(&arena, node);
+            assert_eq!(steps.len(), edges.len());
+            for ((start, key, data), edge) in steps.into_iter().zip(edges) {
+                assert_eq!((start, key), edge);
+                let node_id = NodeId {
+                    index1: NonZeroU32::new(key.0).unwrap(),
+                    generation: key.1,
+                };
+                if arena.is_removed(node_id) {
+                    assert_eq!(data, None);
+                } else {
+                    assert_eq!(data, Some(*arena.get(node_id)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn traverse_step_reads_the_tree_as_it_is_when_new_nodes_take_free_slots() {
+    let mut arena = Arena::new();
+    let root = arena.new_node(0);
+    let mut nodes = vec![root];
+    for value in 1..100u32 {
+        let node = arena.new_node(value);
+        arena
+            .checked_append(nodes[(value as usize * 5) % nodes.len()], node)
+            .unwrap();
+        nodes.push(node);
+    }
+    // free slots, from another tree
+    let other = arena.new_node(1000);
+    for value in 0..50 {
+        let node = arena.new_node(1001 + value);
+        arena.checked_append(other, node).unwrap();
+    }
+    arena.remove_subtree(other);
+    let before = stepped(&arena, root);
+    // a new node after each step, in a free slot while there is one
+    let mut state = arena.traverse_start(root);
+    let mut steps = Vec::new();
+    let mut made: Vec<NodeId> = Vec::new();
+    while let Some((edge, data)) = arena.traverse_step(&mut state) {
+        let (start, node_id) = match edge {
+            NodeEdge::Start(node_id) => (true, node_id),
+            NodeEdge::End(node_id) => (false, node_id),
+        };
+        steps.push((start, my_key(node_id), data.copied()));
+        let node = arena.new_node(2000);
+        if let Some(&last) = made.last() {
+            arena.checked_append(last, node).unwrap();
+        }
+        made.push(node);
+    }
+    assert_eq!(steps, before);
+    // the new nodes took the 51 free slots and then new ones
+    assert_eq!(made.len(), 200);
+    assert!(made[..51].iter().all(|&node| node.generation == 1));
+    assert!(made[51..].iter().all(|&node| node.generation == 0));
+}
+
+#[test]
+fn get_pair_mut_gives_the_data_of_two_slots() {
+    let mut arena = Arena::new();
+    let nodes: Vec<NodeId> = (0..70_000u32).map(|value| arena.new_node(value)).collect();
+    assert_eq!(arena.chunks.len(), 2);
+    // in one chunk and in two, either way round
+    for (a, b) in [(1, 2), (2, 1), (5, 66_000), (66_000, 5), (65_535, 65_536)] {
+        let (x, y) = arena.get_pair_mut(nodes[a], nodes[b]).unwrap();
+        assert_eq!((*x, *y), (a as u32, b as u32));
+        *x += 1_000_000;
+        *y += 2_000_000;
+        assert_eq!(*arena.get(nodes[a]), a as u32 + 1_000_000);
+        assert_eq!(*arena.get(nodes[b]), b as u32 + 2_000_000);
+        *arena.get_mut(nodes[a]) = a as u32;
+        *arena.get_mut(nodes[b]) = b as u32;
+    }
+    // one slot, also through the handle of a node that was in it before
+    assert!(arena.get_pair_mut(nodes[3], nodes[3]).is_none());
+    arena.remove(nodes[7]);
+    let again = arena.new_node(7);
+    assert_ne!(again, nodes[7]);
+    assert!(arena.get_pair_mut(again, nodes[7]).is_none());
+    // a removed node panics, as with get_mut
+    arena.remove(nodes[9]);
+    for (a, b) in [(nodes[9], nodes[10]), (nodes[10], nodes[9])] {
+        let mut arena = arena.clone();
+        let panic = catch(move || {
+            arena.get_pair_mut(a, b);
+        })
+        .unwrap_err();
+        assert!(panic.contains("Try to access a freed node"), "{panic}");
+    }
+}
+
 // ---------------------------------------------------------------- the oracle
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
