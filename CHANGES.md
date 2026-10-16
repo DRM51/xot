@@ -336,6 +336,19 @@
   they go through children, and the small accessors are inline, so that a
   caller in another crate reads a node once for several of them.
 
+- `Xot::parse` and `Xot::parse_fragment` no longer collect the span
+  information that `Xot::parse_with_span_info` and
+  `Xot::parse_fragment_with_span_info` return, a span for every element,
+  attribute, text, comment and processing instruction, which they dropped
+  when they were done. They keep only the spans that their errors can
+  report: those of the first text and of the second element under the
+  document node, and those of the elements that are open. The errors and
+  their spans do not change. On a generated document of 25 megabytes with
+  2.0M nodes the span information took 132.0 MiB when parsing ended, and up
+  to 198 MiB while it grew; parsing now peaks at 154.9 MiB of heap instead
+  of 302.0 MiB (the input text included) and at 167.8 MiB of resident
+  memory instead of 429.5 MiB, and takes 284 ms instead of 383 ms.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text

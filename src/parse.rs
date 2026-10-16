@@ -605,18 +605,196 @@ impl SpanInfo {
             self.map.insert(key, span);
         }
     }
+}
 
-    fn add_attribute_spans(&mut self, node_id: NodeId, attribute_spans: AttributeSpans) {
-        for (attribute_name, name_span, value_span) in attribute_spans {
-            self.add(
-                SpanInfoKey::AttributeName(Node::new(node_id), attribute_name),
-                name_span,
-            );
-            self.add(
-                SpanInfoKey::AttributeValue(Node::new(node_id), attribute_name),
-                value_span,
-            );
+/// Where `Xot::_parse` puts the spans of the nodes it makes, and where the
+/// checks after it find the spans of their errors.
+///
+/// [`SpanInfo`] keeps the spans of all nodes, for
+/// [`Xot::parse_with_span_info`] and [`Xot::parse_fragment_with_span_info`].
+/// [`ErrorSpans`] keeps only the spans that the checks can report, for
+/// [`Xot::parse`] and [`Xot::parse_fragment`], so that these take no memory
+/// for the spans of all nodes. The checks get the same spans from both.
+trait SpanRecorder {
+    /// An element was opened: `span` is its name in the start tag.
+    fn element_start(&mut self, node_id: NodeId, span: Span);
+
+    /// An attribute of the element that was just opened: `name_span` is its
+    /// name and `value_span` its value.
+    fn attribute(&mut self, node_id: NodeId, name_id: NameId, name_span: Span, value_span: Span);
+
+    /// An element was closed: `span` is its end tag, or the `/>` of an empty
+    /// element tag.
+    fn element_end(&mut self, node_id: NodeId, span: Span);
+
+    /// Text or the content of a CDATA section, which made the text node
+    /// `node_id`, or was merged into it as that node was the last child of
+    /// its parent already.
+    fn text(&mut self, node_id: NodeId, span: Span);
+
+    /// A comment: `span` is its text.
+    fn comment(&mut self, node_id: NodeId, span: Span);
+
+    /// A processing instruction: the spans of its target and its content.
+    fn processing_instruction(&mut self, node_id: NodeId, target: Span, content: Option<Span>);
+
+    /// The span of `node`, the first text node under the document node, for
+    /// [`ParseError::TextAtTopLevel`].
+    fn top_level_text(&self, node: Node) -> Span;
+
+    /// The span of the name in the start tag of `node`, the second element
+    /// under the document node, for
+    /// [`ParseError::MultipleElementsAtTopLevel`].
+    fn second_top_level_element(&self, node: Node) -> Span;
+
+    /// The span of the name in the start tag of `node`, the innermost element
+    /// that is still open at the end of the text, for
+    /// [`ParseError::UnclosedTag`].
+    fn unclosed_element(&self, node: Node) -> Span;
+}
+
+impl SpanRecorder for SpanInfo {
+    fn element_start(&mut self, node_id: NodeId, span: Span) {
+        self.add(SpanInfoKey::ElementStart(Node::new(node_id)), span);
+    }
+
+    fn attribute(&mut self, node_id: NodeId, name_id: NameId, name_span: Span, value_span: Span) {
+        self.add(
+            SpanInfoKey::AttributeName(Node::new(node_id), name_id),
+            name_span,
+        );
+        self.add(
+            SpanInfoKey::AttributeValue(Node::new(node_id), name_id),
+            value_span,
+        );
+    }
+
+    fn element_end(&mut self, node_id: NodeId, span: Span) {
+        self.add(SpanInfoKey::ElementEnd(Node::new(node_id)), span);
+    }
+
+    fn text(&mut self, node_id: NodeId, span: Span) {
+        self.extend_text_span(Node::new(node_id), span);
+    }
+
+    fn comment(&mut self, node_id: NodeId, span: Span) {
+        self.add(SpanInfoKey::Comment(Node::new(node_id)), span);
+    }
+
+    fn processing_instruction(&mut self, node_id: NodeId, target: Span, content: Option<Span>) {
+        self.add(SpanInfoKey::PiTarget(Node::new(node_id)), target);
+        if let Some(content) = content {
+            self.add(SpanInfoKey::PiContent(Node::new(node_id)), content);
         }
+    }
+
+    fn top_level_text(&self, node: Node) -> Span {
+        *self.get(SpanInfoKey::Text(node)).unwrap()
+    }
+
+    fn second_top_level_element(&self, node: Node) -> Span {
+        *self.get(SpanInfoKey::ElementStart(node)).unwrap()
+    }
+
+    fn unclosed_element(&self, node: Node) -> Span {
+        *self.get(SpanInfoKey::ElementStart(node)).unwrap()
+    }
+}
+
+/// The spans that the checks after a parse can report, the only spans that
+/// [`Xot::parse`] and [`Xot::parse_fragment`] keep. Their memory grows with
+/// the depth of the elements, where a [`SpanInfo`] holds a span for every
+/// node. Each span is the one that a [`SpanInfo`] has for the same node.
+///
+/// The nodes under the document node are made in the order of the text, which
+/// is the order of its children: the first text node made under it is its
+/// first text child, and the second element made under it is its second
+/// element child. An element or a text is made under the document node when
+/// no element is open.
+#[derive(Default)]
+struct ErrorSpans {
+    /// The first text node under the document node, and its span: from the
+    /// start of the first text or CDATA section in it to the end of the last
+    /// one merged into it, as `SpanInfo::extend_text_span` makes it.
+    top_level_text: Option<(NodeId, Span)>,
+    /// The number of elements opened under the document node.
+    top_level_elements: usize,
+    /// The second element under the document node, and the span of its name
+    /// in its start tag.
+    second_top_level_element: Option<(NodeId, Span)>,
+    /// The elements that are open, the innermost last, and the spans of their
+    /// names in their start tags.
+    open_elements: Vec<(NodeId, Span)>,
+}
+
+impl SpanRecorder for ErrorSpans {
+    #[inline]
+    fn element_start(&mut self, node_id: NodeId, span: Span) {
+        if self.open_elements.is_empty() {
+            self.top_level_elements += 1;
+            if self.top_level_elements == 2 {
+                self.second_top_level_element = Some((node_id, span));
+            }
+        }
+        self.open_elements.push((node_id, span));
+    }
+
+    #[inline]
+    fn attribute(
+        &mut self,
+        _node_id: NodeId,
+        _name_id: NameId,
+        _name_span: Span,
+        _value_span: Span,
+    ) {
+    }
+
+    #[inline]
+    fn element_end(&mut self, node_id: NodeId, _span: Span) {
+        let closed = self.open_elements.pop();
+        debug_assert_eq!(closed.map(|(closed, _)| closed), Some(node_id));
+    }
+
+    #[inline]
+    fn text(&mut self, node_id: NodeId, span: Span) {
+        if !self.open_elements.is_empty() {
+            return;
+        }
+        match &mut self.top_level_text {
+            None => self.top_level_text = Some((node_id, span)),
+            // merged into the first text node: its span grows, as in
+            // `SpanInfo::extend_text_span`
+            Some((first, first_span)) if *first == node_id => first_span.end = span.end,
+            Some(_) => {}
+        }
+    }
+
+    #[inline]
+    fn comment(&mut self, _node_id: NodeId, _span: Span) {}
+
+    #[inline]
+    fn processing_instruction(&mut self, _node_id: NodeId, _target: Span, _content: Option<Span>) {}
+
+    fn top_level_text(&self, node: Node) -> Span {
+        let (first, span) = self
+            .top_level_text
+            .expect("No text node under the document node");
+        debug_assert_eq!(first, node.get());
+        span
+    }
+
+    fn second_top_level_element(&self, node: Node) -> Span {
+        let (second, span) = self
+            .second_top_level_element
+            .expect("No second element under the document node");
+        debug_assert_eq!(second, node.get());
+        span
+    }
+
+    fn unclosed_element(&self, node: Node) -> Span {
+        let (innermost, span) = *self.open_elements.last().expect("No open element");
+        debug_assert_eq!(innermost, node.get());
+        span
     }
 }
 
@@ -628,9 +806,36 @@ impl Xot {
     /// [`SpanInfo`](`crate::SpanInfo`) which describes where nodes in the
     /// tree are located in the source text.
     pub fn parse_with_span_info(&mut self, xml: &str) -> Result<(Node, SpanInfo), ParseError> {
+        let mut span_info = SpanInfo::new();
+        let document_node = self.parse_document(xml, &mut span_info)?;
+        Ok((document_node, span_info))
+    }
+
+    /// Parse `xml` as a document, with the spans in `recorder`.
+    fn parse_document<R: SpanRecorder>(
+        &mut self,
+        xml: &str,
+        recorder: &mut R,
+    ) -> Result<Node, ParseError> {
         let text = declaration_with_space(xml);
         let tokenizer = Tokenizer::from(text.as_ref());
-        let (span_info, builder) = self._parse(tokenizer, xml)?;
+        self.parse_tokens_as_document(tokenizer, xml, recorder)
+    }
+
+    /// Parse the tokens of `xml` into a document node, and check that it is
+    /// a well-formed document: no element is left open, and the document node
+    /// has one element and no text.
+    ///
+    /// The tokenizer of a document does not give text, or a second element,
+    /// outside the document element, but stops with an error first; the
+    /// tests also give this function the tokens of a fragment.
+    fn parse_tokens_as_document<R: SpanRecorder>(
+        &mut self,
+        tokenizer: Tokenizer<'_>,
+        xml: &str,
+        recorder: &mut R,
+    ) -> Result<Node, ParseError> {
+        let builder = self._parse(tokenizer, xml, recorder)?;
         // we expect both a document as the current node (everything else being
         // closed) *and* the content of this node containing a single element
         // if not, we have a problem. We want to produce a parse error for
@@ -643,9 +848,7 @@ impl Xot {
                 match self.value(child) {
                     Value::Element(_) => element_nodes.push(child),
                     Value::Text(_) => {
-                        return Err(ParseError::TextAtTopLevel(
-                            *span_info.get(SpanInfoKey::Text(child)).unwrap(),
-                        ));
+                        return Err(ParseError::TextAtTopLevel(recorder.top_level_text(child)));
                     }
                     _ => {}
                 }
@@ -655,22 +858,18 @@ impl Xot {
             }
             if element_nodes.len() > 1 {
                 return Err(ParseError::MultipleElementsAtTopLevel(
-                    *span_info
-                        .get(SpanInfoKey::ElementStart(element_nodes[1]))
-                        .unwrap(),
+                    recorder.second_top_level_element(element_nodes[1]),
                 ));
             }
             self.id_nodes_map
                 .insert(document_node.get(), builder.id_nodes);
-            Ok((document_node, span_info))
+            Ok(document_node)
         } else {
             let current_node = Node::new(builder.current_node_id);
 
             // the top level node's span is the problem
             Err(ParseError::UnclosedTag(
-                *span_info
-                    .get(SpanInfoKey::ElementStart(current_node))
-                    .unwrap(),
+                recorder.unclosed_element(current_node),
             ))
         }
     }
@@ -694,36 +893,46 @@ impl Xot {
         &mut self,
         xml: &str,
     ) -> Result<(Node, SpanInfo), ParseError> {
+        let mut span_info = SpanInfo::new();
+        let document_node = self.parse_fragment_document(xml, &mut span_info)?;
+        Ok((document_node, span_info))
+    }
+
+    /// Parse `xml` as a fragment, with the spans in `recorder`.
+    fn parse_fragment_document<R: SpanRecorder>(
+        &mut self,
+        xml: &str,
+        recorder: &mut R,
+    ) -> Result<Node, ParseError> {
         let tokenizer = Tokenizer::from_fragment(xml, 0..xml.len());
-        let (span_info, builder) = self._parse(tokenizer, xml)?;
+        let builder = self._parse(tokenizer, xml, recorder)?;
         if builder.is_current_node_document(self) {
             let document_node = Node::new(builder.tree);
             self.id_nodes_map
                 .insert(document_node.get(), builder.id_nodes);
-            Ok((document_node, span_info))
+            Ok(document_node)
         } else {
             let current_node = Node::new(builder.current_node_id);
 
             // the top level node's span is the problem
             Err(ParseError::UnclosedTag(
-                *span_info
-                    .get(SpanInfoKey::ElementStart(current_node))
-                    .unwrap(),
+                recorder.unclosed_element(current_node),
             ))
         }
     }
 
     /// Parse the tokens of `xml`, which the tokenizer reads, maybe with a
-    /// space in the place of one character (see `declaration_with_space`).
-    fn _parse(
+    /// space in the place of one character (see `declaration_with_space`),
+    /// and tell `recorder` the spans of the nodes made.
+    fn _parse<R: SpanRecorder>(
         &mut self,
         mut tokenizer: Tokenizer<'_>,
         xml: &str,
-    ) -> Result<(SpanInfo, DocumentBuilder), ParseError> {
+        recorder: &mut R,
+    ) -> Result<DocumentBuilder, ParseError> {
         use Token::*;
 
         let mut builder = DocumentBuilder::new(self);
-        let mut span_info = SpanInfo::new();
 
         let mut position;
         loop {
@@ -765,11 +974,11 @@ impl Xot {
                     }
                     Text { text } => {
                         let node_id = builder.text(&text, self)?;
-                        span_info.extend_text_span(Node::new(node_id), text.into());
+                        recorder.text(node_id, text.into());
                     }
                     Cdata { text, span: _ } => {
                         let node_id = builder.cdata_text(text.as_str(), self)?;
-                        span_info.extend_text_span(Node::new(node_id), text.into());
+                        recorder.text(node_id, text.into());
                     }
                     ElementStart {
                         prefix,
@@ -789,32 +998,24 @@ impl Xot {
                             Open => {
                                 let (node_id, span, attribute_spans) =
                                     builder.open_element(self)?;
-                                span_info.add(SpanInfoKey::ElementStart(Node::new(node_id)), span);
-                                span_info.add_attribute_spans(node_id, attribute_spans);
+                                record_element_start(recorder, node_id, span, attribute_spans);
                             }
                             Close(prefix, local) => {
                                 let node_id = builder.close_element(prefix, local, self)?;
-                                span_info.add(
-                                    SpanInfoKey::ElementEnd(Node::new(node_id)),
-                                    end_span.into(),
-                                );
+                                recorder.element_end(node_id, end_span.into());
                             }
                             Empty => {
                                 let (node_id, span, attribute_spans) =
                                     builder.open_element(self)?;
-                                span_info.add(SpanInfoKey::ElementStart(Node::new(node_id)), span);
-                                span_info.add_attribute_spans(node_id, attribute_spans);
+                                record_element_start(recorder, node_id, span, attribute_spans);
                                 let node_id = builder.close_element_immediate(self);
-                                span_info.add(
-                                    SpanInfoKey::ElementEnd(Node::new(node_id)),
-                                    end_span.into(),
-                                );
+                                recorder.element_end(node_id, end_span.into());
                             }
                         }
                     }
                     Comment { text, span: _ } => {
                         let node_id = builder.comment(text.as_str(), self)?;
-                        span_info.add(SpanInfoKey::Comment(Node::new(node_id)), text.into());
+                        recorder.comment(node_id, text.into());
                     }
                     ProcessingInstruction {
                         target,
@@ -835,11 +1036,11 @@ impl Xot {
                             content.map(|s| s.as_str()),
                             self,
                         )?;
-                        span_info.add(SpanInfoKey::PiTarget(Node::new(node_id)), target.into());
-                        if let Some(content) = content {
-                            span_info
-                                .add(SpanInfoKey::PiContent(Node::new(node_id)), content.into());
-                        }
+                        recorder.processing_instruction(
+                            node_id,
+                            target.into(),
+                            content.map(Span::from),
+                        );
                     }
                     Declaration { version, .. } => {
                         if version.as_str() != "1.0" {
@@ -863,7 +1064,7 @@ impl Xot {
                     }
                 }
             } else {
-                return Ok((span_info, builder));
+                return Ok(builder);
             }
         }
     }
@@ -877,6 +1078,9 @@ impl Xot {
     /// The returned node is the document node of the
     /// parsed XML document.
     ///
+    /// To know where the nodes are in `xml`, use
+    /// [`Xot::parse_with_span_info`].
+    ///
     /// ```rust
     /// use xot::Xot;
     ///
@@ -886,7 +1090,7 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn parse(&mut self, xml: &str) -> Result<Node, ParseError> {
-        self.parse_with_span_info(xml).map(|(node, _)| node)
+        self.parse_document(xml, &mut ErrorSpans::default())
     }
 
     /// Parse a string containing an XML fragment into a document node.
@@ -900,9 +1104,11 @@ impl Xot {
     /// This is to support
     /// <https://www.w3.org/TR/xpath-datamodel/#DocumentNode> which is more
     /// permissive than standard XML.
+    ///
+    /// To know where the nodes are in `xml`, use
+    /// [`Xot::parse_fragment_with_span_info`].
     pub fn parse_fragment(&mut self, xml: &str) -> Result<Node, ParseError> {
-        self.parse_fragment_with_span_info(xml)
-            .map(|(node, _)| node)
+        self.parse_fragment_document(xml, &mut ErrorSpans::default())
     }
 
     /// Parse bytes containing XML into a node.
@@ -973,6 +1179,20 @@ impl Xot {
     pub fn parse_bytes(&mut self, bytes: &[u8]) -> Result<Node, ParseError> {
         let xml = decode(bytes)?;
         self.parse(&xml)
+    }
+}
+
+/// Tell `recorder` the span of the name of the element `node_id`, which was
+/// just opened, and the spans of its attributes.
+fn record_element_start<R: SpanRecorder>(
+    recorder: &mut R,
+    node_id: NodeId,
+    span: Span,
+    attribute_spans: AttributeSpans,
+) {
+    recorder.element_start(node_id, span);
+    for (name_id, name_span, value_span) in attribute_spans {
+        recorder.attribute(node_id, name_id, name_span, value_span);
     }
 }
 
@@ -1108,3 +1328,6 @@ fn normalize_xml_id(value: &str) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests;

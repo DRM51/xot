@@ -700,3 +700,125 @@ fn test_fragment_end_tag_without_start_tag() {
         assert_eq!(err.span(), span.into(), "{}", xml);
     }
 }
+
+// The spans of the errors of the checks after a parse: `parse` and
+// `parse_fragment` keep only these spans, and give the errors of
+// `parse_with_span_info` and `parse_fragment_with_span_info`.
+
+/// The error of `parse` for `xml`, which `parse_with_span_info` gives too.
+fn document_error(xml: &str) -> xot::ParseError {
+    let mut xot = Xot::new();
+    let err = xot.parse(xml).unwrap_err();
+    let mut xot = Xot::new();
+    let with_span_info = xot.parse_with_span_info(xml).map(|(n, _)| n).unwrap_err();
+    assert_eq!(
+        format!("{:?}", err),
+        format!("{:?}", with_span_info),
+        "{:?}",
+        xml
+    );
+    err
+}
+
+/// The error of `parse_fragment` for `xml`, which
+/// `parse_fragment_with_span_info` gives too.
+fn fragment_error(xml: &str) -> xot::ParseError {
+    let mut xot = Xot::new();
+    let err = xot.parse_fragment(xml).unwrap_err();
+    let mut xot = Xot::new();
+    let with_span_info = xot
+        .parse_fragment_with_span_info(xml)
+        .map(|(n, _)| n)
+        .unwrap_err();
+    assert_eq!(
+        format!("{:?}", err),
+        format!("{:?}", with_span_info),
+        "{:?}",
+        xml
+    );
+    err
+}
+
+/// Check that `err` is `UnclosedTag` with `span`.
+fn assert_unclosed_tag(xml: &str, err: xot::ParseError, span: std::ops::Range<usize>) {
+    assert!(
+        matches!(err, xot::ParseError::UnclosedTag(_)),
+        "{:?}: {:?}",
+        xml,
+        err
+    );
+    assert_eq!(err.span(), span.into(), "{:?}", xml);
+}
+
+#[test]
+fn test_unclosed_tag_spans() {
+    // the span is the name in the start tag of the innermost element that is
+    // still open, in a document and in a fragment
+    for (xml, span) in [
+        ("<doc>", 1..4),
+        ("<a><b>", 4..5),
+        ("<a><b></b>", 1..2),
+        ("<a><b><c/></b><d>", 15..16),
+        (r#"<a x="1"><b y="2"/>"#, 1..2),
+        (r#"<p:a xmlns:p="urn:p"><p:b>"#, 22..25),
+        // after text merged with references and CDATA sections
+        ("<a>x&amp;<![CDATA[y]]>z<b>t&lt;", 24..25),
+        ("<a>\r\n<![CDATA[\r\n]]><b/>", 1..2),
+    ] {
+        assert_unclosed_tag(xml, document_error(xml), span.clone());
+        assert_unclosed_tag(xml, fragment_error(xml), span);
+    }
+    // after a byte order mark and an XML declaration, in a document
+    for (xml, span) in [
+        ("\u{FEFF}<?xml version=\"1.0\"?>\n<a>", 26..27),
+        ("<?xml\nversion=\"1.0\"?><a><b>", 25..26),
+    ] {
+        assert_unclosed_tag(xml, document_error(xml), span);
+    }
+    // after text and elements at the top level, in a fragment
+    for (xml, span) in [
+        ("text<a>", 5..6),
+        ("<a/><b>", 5..6),
+        ("<a></a>t<b><c/>", 9..10),
+        ("t<![CDATA[x]]><a>&amp;", 15..16),
+    ] {
+        assert_unclosed_tag(xml, fragment_error(xml), span);
+    }
+}
+
+#[test]
+fn test_text_and_elements_at_top_level() {
+    // the tokenizer of a document stops at text or a second element outside
+    // the document element, before the checks for `TextAtTopLevel` and
+    // `MultipleElementsAtTopLevel`; a fragment can have them
+    for (xml, position) in [
+        ("t<a/>", 0),
+        ("<a/>t", 4),
+        ("<a/><b/>", 4),
+        ("<a/><![CDATA[c]]>", 4),
+        ("<a/>&amp;", 4),
+    ] {
+        let err = document_error(xml);
+        assert!(
+            matches!(
+                err,
+                xot::ParseError::XmlParser(xmlparser::Error::UnknownToken(_), _)
+            ),
+            "{:?}: {:?}",
+            xml,
+            err
+        );
+        assert_eq!(err.span(), (position..position).into(), "{:?}", xml);
+        let mut xot = Xot::new();
+        let document = xot.parse_fragment(xml).unwrap();
+        assert_eq!(
+            xot.to_string(document).unwrap(),
+            xml.replace("<![CDATA[c]]>", "c")
+        );
+        let (document, _) = xot.parse_fragment_with_span_info(xml).unwrap();
+        assert_eq!(
+            xot.to_string(document).unwrap(),
+            xml.replace("<![CDATA[c]]>", "c")
+        );
+    }
+}
