@@ -403,8 +403,10 @@ fn test_parse_bytes_invalid_byte_sequence_us_ascii_names() {
         "ANSI_X3.4-1968",
         "ANSI_X3.4-1986",
         "ISO646-US",
+        "iso-ir-6",
         "us",
         "IBM367",
+        "cp367",
         "csASCII",
     ] {
         let mut xml = format!("<?xml version=\"1.0\" encoding=\"{}\"?><doc>", name).into_bytes();

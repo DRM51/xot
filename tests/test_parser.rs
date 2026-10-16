@@ -714,15 +714,18 @@ fn test_parse_bytes_iso_8859_1() {
 
 #[test]
 fn test_parse_bytes_iso_8859_1_names() {
-    // names IANA registers for ISO-8859-1, in any case; ISO_8859-1:1987 is
-    // one too, but `:` cannot be in an encoding declaration
+    // the names IANA registers for ISO-8859-1, in any case; ISO_8859-1:1987
+    // is one too, but `:` cannot be in an encoding declaration
     let mut xot = Xot::new();
     for name in [
         "ISO-8859-1",
         "iso-8859-1",
         "ISO_8859-1",
         "latin1",
+        "L1",
         "IBM819",
+        "cp819",
+        "iso-ir-100",
         "csISOLatin1",
     ] {
         let doc = xot
@@ -732,8 +735,9 @@ fn test_parse_bytes_iso_8859_1_names() {
         assert_eq!(xot.text_content_str(doc_el), Some("\u{80}"), "{}", name);
     }
     // an encoding declaration with `:` in the name (production [81] EncName
-    // does not allow it) is not well-formed
-    for name in ["ISO_8859-1:1987", "ISO_646.irv:1991"] {
+    // does not allow it) is not well-formed; ISO_646.irv:1991 already fails
+    // as a name that is not known
+    for name in ["ISO_8859-1:1987", "ISO_8859-9:1989", "ISO_646.irv:1991"] {
         assert!(
             xot.parse_bytes(&declared_encoding_document(name, b"\x80"))
                 .is_err(),
@@ -779,14 +783,17 @@ fn test_parse_bytes_iso_8859_0x80_to_0x9f() {
 
 #[test]
 fn test_parse_bytes_iso_8859_9() {
-    // ISO-8859-1 with six Turkish letters; names IANA registers for
-    // ISO-8859-9, in any case
+    // ISO-8859-1 with six Turkish letters; the names IANA registers for
+    // ISO-8859-9, in any case; ISO_8859-9:1989 is one too, but `:` cannot
+    // be in an encoding declaration
     let mut xot = Xot::new();
     for name in [
         "ISO-8859-9",
         "iso-8859-9",
         "ISO_8859-9",
+        "iso-ir-148",
         "latin5",
+        "L5",
         "csISOLatin5",
     ] {
         assert_eq!(
@@ -818,7 +825,7 @@ fn test_parse_bytes_tis_620() {
 
 #[test]
 fn test_parse_bytes_us_ascii() {
-    // names IANA registers for US-ASCII, and ASCII, in any case;
+    // the names IANA registers for US-ASCII, and ASCII, in any case;
     // ISO_646.irv:1991 is one too, but `:` cannot be in an encoding
     // declaration
     let mut xot = Xot::new();
@@ -829,8 +836,10 @@ fn test_parse_bytes_us_ascii() {
         "ANSI_X3.4-1968",
         "ANSI_X3.4-1986",
         "ISO646-US",
+        "iso-ir-6",
         "us",
         "IBM367",
+        "cp367",
         "csASCII",
     ] {
         let doc = xot
@@ -850,7 +859,7 @@ fn test_parse_bytes_us_ascii() {
 fn test_parse_bytes_windows_1252() {
     // windows-1252 has the euro sign at 0x80
     let mut xot = Xot::new();
-    for name in ["windows-1252", "Windows-1252"] {
+    for name in ["windows-1252", "Windows-1252", "cp1252"] {
         let doc = xot
             .parse_bytes(&declared_encoding_document(name, b"\x80"))
             .unwrap();

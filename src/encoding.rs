@@ -15,10 +15,9 @@
 //! control characters U+0080 to U+009F, and which have characters for the
 //! bytes 0x80 and above, which are not US-ASCII. XML 1.0 asks for a name that
 //! IANA registers to be taken as the encoding that IANA registers it for, so
-//! these encodings are decoded as they are defined. IANA registers a few
-//! more names for them, which are not in `IANA_NAMES`: those that the
-//! Encoding Standard has as names of windows-1252 or windows-1254 still stand
-//! for those encodings, and the others are not known.
+//! these encodings are decoded as they are defined. `IANA_NAMES` has all the
+//! names that IANA registers for them, except those with `:`, which an
+//! encoding declaration cannot have.
 
 use encoding_rs::{DecoderResult, Encoding, REPLACEMENT, UTF_16BE, UTF_16LE, UTF_8};
 
@@ -62,7 +61,7 @@ impl DocumentEncoding {
 }
 
 /// The encodings that are decoded as IANA registers them rather than as the
-/// WHATWG Encoding Standard has them, with names that IANA registers for them
+/// WHATWG Encoding Standard has them, with the names IANA registers for them
 /// in its Character Sets registry, and `ASCII`, a common name of US-ASCII.
 /// The names with `:` that IANA also registers are left out, as an encoding
 /// declaration cannot have them (XML 1.0, production [81] EncName).
@@ -71,11 +70,13 @@ const IANA_NAMES: [(DocumentEncoding, &[&str]); 4] = [
         DocumentEncoding::Ascii,
         &[
             "US-ASCII",
+            "iso-ir-6",
             "ANSI_X3.4-1968",
             "ANSI_X3.4-1986",
             "ISO646-US",
             "us",
             "IBM367",
+            "cp367",
             "csASCII",
             "ASCII",
         ],
@@ -83,16 +84,26 @@ const IANA_NAMES: [(DocumentEncoding, &[&str]); 4] = [
     (
         DocumentEncoding::Latin1,
         &[
+            "iso-ir-100",
             "ISO_8859-1",
             "ISO-8859-1",
             "latin1",
+            "l1",
             "IBM819",
+            "CP819",
             "csISOLatin1",
         ],
     ),
     (
         DocumentEncoding::Latin5,
-        &["ISO_8859-9", "ISO-8859-9", "latin5", "csISOLatin5"],
+        &[
+            "iso-ir-148",
+            "ISO_8859-9",
+            "ISO-8859-9",
+            "latin5",
+            "l5",
+            "csISOLatin5",
+        ],
     ),
     (
         DocumentEncoding::Thai,
@@ -891,13 +902,19 @@ mod tests {
 
     #[test]
     fn test_latin1_names() {
-        // names IANA registers for ISO-8859-1, in any case
+        // the names IANA registers for ISO-8859-1, in any case
         for name in [
+            "iso-ir-100",
             "ISO_8859-1",
             "ISO-8859-1",
             "latin1",
+            "l1",
             "IBM819",
+            "CP819",
             "csISOLatin1",
+            "ISO-IR-100",
+            "L1",
+            "cp819",
             "iso_8859-1",
             "iso-8859-1",
             "Latin1",
@@ -910,9 +927,13 @@ mod tests {
 
     #[test]
     fn test_ascii_names() {
-        // names IANA registers for US-ASCII, and ASCII, in any case
+        // the names IANA registers for US-ASCII, and ASCII, in any case
         for name in [
             "US-ASCII",
+            "iso-ir-6",
+            "cp367",
+            "ISO-IR-6",
+            "CP367",
             "ANSI_X3.4-1968",
             "ANSI_X3.4-1986",
             "ISO646-US",
@@ -935,8 +956,12 @@ mod tests {
 
     #[test]
     fn test_latin5_names() {
-        // names IANA registers for ISO-8859-9, in any case
+        // the names IANA registers for ISO-8859-9, in any case
         for name in [
+            "iso-ir-148",
+            "l5",
+            "ISO-IR-148",
+            "L5",
             "ISO_8859-9",
             "ISO-8859-9",
             "latin5",
@@ -968,7 +993,14 @@ mod tests {
     fn test_windows_1252_names() {
         // windows-1252 itself, and names the WHATWG Encoding Standard has for
         // it that IANA does not register for ISO-8859-1
-        for name in ["windows-1252", "WINDOWS-1252", "iso8859-1", "iso88591"] {
+        for name in [
+            "windows-1252",
+            "WINDOWS-1252",
+            "cp1252",
+            "x-cp1252",
+            "iso8859-1",
+            "iso88591",
+        ] {
             assert_eq!(declared(name), "windows-1252", "{}", name);
         }
     }
@@ -1004,8 +1036,8 @@ mod tests {
     #[test]
     fn test_decode_iso_8859_0x80_to_0x9f() {
         // in the ISO 8859 encodings the bytes 0x80 to 0x9F are the control
-        // characters U+0080 to U+009F; windows-1252, windows-1254 and
-        // windows-874 have other characters for most of them
+        // characters U+0080 to U+009F; windows-1252 and windows-1254 have
+        // other characters for most of them, and windows-874 for some
         for name in ["ISO-8859-1", "ISO-8859-9", "ISO-8859-11", "TIS-620"] {
             for byte in 0x80..=0x9F {
                 assert_eq!(

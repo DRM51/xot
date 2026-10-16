@@ -198,16 +198,16 @@
   `ParseError::InvalidByteSequence` for the bytes it has no character for.
   TIS 620 itself has no character for 0xA0, but as IANA registers
   ISO-8859-11 as another name for it, 0xA0 is NO-BREAK SPACE, as in
-  ISO-8859-11. This holds for these names, in any case: US-ASCII,
-  ANSI_X3.4-1968, ANSI_X3.4-1986, ISO646-US, us, IBM367 and csASCII, as well
-  as ASCII; ISO-8859-1, ISO_8859-1, latin1, IBM819 and csISOLatin1;
-  ISO-8859-9, ISO_8859-9, latin5 and csISOLatin5; TIS-620, csTIS620 and
-  ISO-8859-11. Several of these were not known before. windows-1252,
-  windows-1254 and windows-874 themselves, and the other WHATWG names for
-  them such as `iso8859-1`, still stand for those encodings. IANA registers
-  a few more names for US-ASCII, ISO-8859-1 and ISO-8859-9 that are not
-  covered yet: those that are WHATWG names of windows-1252 or windows-1254
-  stand for these, and the others are not known.
+  ISO-8859-11. This holds for the names IANA registers for these encodings,
+  in any case, apart from those with `:` such as ISO_8859-1:1987, which an
+  encoding declaration cannot have: US-ASCII, iso-ir-6, ANSI_X3.4-1968,
+  ANSI_X3.4-1986, ISO646-US, us, IBM367, cp367 and csASCII, as well as
+  ASCII; ISO-8859-1, ISO_8859-1, iso-ir-100, latin1, l1, IBM819, CP819 and
+  csISOLatin1; ISO-8859-9, ISO_8859-9, iso-ir-148, latin5, l5 and
+  csISOLatin5; TIS-620, csTIS620 and ISO-8859-11. Several of these were not
+  known before. windows-1252, windows-1254 and windows-874 themselves, and
+  the other WHATWG names for them such as `iso8859-1`, still stand for
+  those encodings.
 
 - Serializing a text node without a parent, such as one made with
   `Xot::new_text`, panicked: with `Xot::to_string` and the other XML
