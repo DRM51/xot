@@ -1,12 +1,12 @@
-use super::idmap::{IdIndex, IdMap};
+use super::idmap::{id_number, IdIndex, IdMap};
 
 /// Id uniquely identifying a prefix
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Ord, PartialOrd)]
-pub struct PrefixId(pub(crate) u16);
+pub struct PrefixId(pub(crate) u32);
 
 impl IdIndex<PrefixId> for PrefixId {
     fn to_id(index: usize) -> PrefixId {
-        PrefixId(index as u16)
+        PrefixId(id_number(index))
     }
 
     fn from_id(id: PrefixId) -> usize {

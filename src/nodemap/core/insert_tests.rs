@@ -554,8 +554,8 @@ fn compare_extends(seeds: std::ops::Range<u64>, seen: &mut Seen) {
 }
 
 /// Count a key twice among the pairs, or two keys with one bit.
-fn note_bits(seen: &mut Seen, ids: impl Iterator<Item = u16>) {
-    let ids: Vec<u16> = ids.collect();
+fn note_bits(seen: &mut Seen, ids: impl Iterator<Item = u32>) {
+    let ids: Vec<u32> = ids.collect();
     let shared = ids
         .iter()
         .enumerate()

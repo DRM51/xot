@@ -7,6 +7,15 @@ pub(crate) trait IdIndex<T> {
     fn from_id(id: T) -> usize;
 }
 
+/// The number of the id at `index` in an [`IdMap`].
+///
+/// Ids are 32 bits, so one `Xot` has room for 2^32 names, prefixes and
+/// namespaces of each kind. Past that this panics: a smaller number would be
+/// the id of an earlier entry, and the new entry would read back as that one.
+pub(crate) fn id_number(index: usize) -> u32 {
+    u32::try_from(index).expect("an Xot has room for 2^32 ids of each kind")
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct IdMap<K: Copy + IdIndex<K>, V: Eq + std::hash::Hash + Clone> {
     by_id: Vec<V>,

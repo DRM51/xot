@@ -1,13 +1,13 @@
-use super::idmap::{IdIndex, IdMap};
+use super::idmap::{id_number, IdIndex, IdMap};
 use super::namespace::NamespaceId;
 
 /// Id uniquely identifying a name and namespace.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Ord, PartialOrd)]
-pub struct NameId(pub(crate) u16);
+pub struct NameId(pub(crate) u32);
 
 impl IdIndex<NameId> for NameId {
     fn to_id(index: usize) -> NameId {
-        NameId(index as u16)
+        NameId(id_number(index))
     }
 
     fn from_id(id: NameId) -> usize {

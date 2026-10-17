@@ -38,7 +38,7 @@ pub trait ValueAdapter<K, V> {
 /// bits of a set of keys may have the bit of a key that is not in the set,
 /// but a key whose bit it does not have is not in the set.
 #[inline]
-pub(crate) fn key_bit(id: u16) -> u64 {
+pub(crate) fn key_bit(id: u32) -> u64 {
     1 << (id % 64)
 }
 

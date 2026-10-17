@@ -1,12 +1,12 @@
-use super::idmap::{IdIndex, IdMap};
+use super::idmap::{id_number, IdIndex, IdMap};
 
 /// Id uniquely identifying namespace.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Ord, PartialOrd)]
-pub struct NamespaceId(u16);
+pub struct NamespaceId(u32);
 
 impl IdIndex<NamespaceId> for NamespaceId {
     fn to_id(index: usize) -> NamespaceId {
-        NamespaceId(index as u16)
+        NamespaceId(id_number(index))
     }
 
     fn from_id(id: NamespaceId) -> usize {

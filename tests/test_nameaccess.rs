@@ -654,3 +654,44 @@ fn test_default_namespace_undeclared() {
         [(xml_prefix, xml_ns)]
     );
 }
+
+// Ids of names, prefixes and namespaces were 16 bits, so from the 65,537th
+// entry on, a new entry got the id of an earlier one and read back as it.
+const MANY: usize = 70_000;
+
+#[test]
+fn test_many_names_read_back() {
+    let mut xot = Xot::new();
+    let ids: Vec<_> = (0..MANY).map(|i| xot.add_name(&format!("n{i}"))).collect();
+    for (i, id) in ids.iter().enumerate() {
+        assert_eq!(xot.local_name_str(*id), format!("n{i}"));
+    }
+}
+
+#[test]
+fn test_many_prefixes_and_namespaces_read_back() {
+    let mut xot = Xot::new();
+    let prefixes: Vec<_> = (0..MANY)
+        .map(|i| xot.add_prefix(&format!("p{i}")))
+        .collect();
+    let namespaces: Vec<_> = (0..MANY)
+        .map(|i| xot.add_namespace(&format!("urn:n{i}")))
+        .collect();
+    for (i, (prefix, namespace)) in prefixes.iter().zip(&namespaces).enumerate() {
+        assert_eq!(xot.prefix_str(*prefix), format!("p{i}"));
+        assert_eq!(xot.namespace_str(*namespace), format!("urn:n{i}"));
+    }
+}
+
+#[test]
+fn test_many_element_names_survive_parse_and_serialize() {
+    use std::fmt::Write;
+    let mut xml = String::from("<doc>");
+    for i in 0..MANY {
+        write!(xml, "<e{i}/>").unwrap();
+    }
+    xml.push_str("</doc>");
+    let mut xot = Xot::new();
+    let root = xot.parse(&xml).unwrap();
+    assert_eq!(xot.to_string(root).unwrap(), xml);
+}

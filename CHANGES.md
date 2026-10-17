@@ -94,6 +94,13 @@
 
 ### Bugs fixed
 
+- `NameId`, `PrefixId` and `NamespaceId` were 16 bits, and a `Xot` that had
+  seen more than 65,536 distinct names (or prefixes, or namespaces) gave the
+  next one the id of an earlier one, with no error: the new name then read
+  back, and was serialized, as the earlier name. The ids are now 32 bits,
+  and going past 2^32 entries of a kind panics instead of reusing an id.
+  Nodes stay the same size.
+
 - XML output now escapes characters as the XML output method of
   Serialization 3.1 (<https://www.w3.org/TR/xslt-xquery-serialization-31/>)
   requires, so that they survive parsing the output again. Tab, newline and
