@@ -338,17 +338,22 @@
   instead of 617.6 MiB, and it takes 389 ms instead of 453 ms. Two copies of
   the document with `clone_node` and their serialization peak at 800.4 MiB of
   resident memory instead of 1306.4 MiB, with 436.7 MiB of heap instead of
-  1140.7 MiB. A walk that calls `Xot::parent`, `Xot::first_child` or
-  `Xot::next_sibling` for each step takes up to 1.6 times as long, as each
-  call looks up the chunk of its node before it reads the node: a walk up
-  through `Xot::parent` 1.8 ns a step instead of 1.2 ns, and one through the
-  whole document by `first_child`, `next_sibling` and `parent` 5.4 ns a node
-  instead of 4.3 ns. `Xot::deep_equal` takes 1.1 to 1.5 times as long.
-  Detaching an element of a parsed document takes 1.1 to 1.3 times as long
-  (77 ns instead of 68 ns for one between two elements), and removing an
-  element with a text 1.1 times (158 ns instead of 141 ns), as
-  `Xot::detach` and `Xot::remove` look up the chunks of the node, of its
-  siblings and of its parent. The iterators, `Xot::ancestors`,
+  1140.7 MiB. Calls of `Xot::parent`, `Xot::first_child`,
+  `Xot::last_child`, `Xot::next_sibling` and `Xot::previous_sibling` take up
+  to 1.6 times as long, as each looks up the chunk of its node before it
+  reads the node: a walk up through `Xot::parent` 1.8 ns a step instead of
+  1.2 ns, one through the whole document by `first_child`, `next_sibling`
+  and `parent` 5.4 ns a node instead of 4.3 ns, and `last_child` of each of
+  100,000 elements 16 to 17 ns instead of 13 ns. `Xot::deep_equal` takes 1.1
+  to 1.5 times as long. Detaching an element of a parsed document takes 1.1
+  to 1.3 times as long (77 ns instead of 68 ns for one between two
+  elements), and removing an element with a text 1.1 times (158 ns instead
+  of 141 ns), as `Xot::detach` and `Xot::remove` look up the chunks of the
+  node, of its siblings and of its parent. A loop that takes the last child
+  of each of 100,000 elements, an element appended to it, and removes it
+  takes 1.4 to 1.6 times as long (88 to 108 ns an element instead of 63 to
+  67 ns), where removing these children alone takes 1.2 times as long (56
+  to 58 ns instead of 47 ns). The iterators, `Xot::ancestors`,
   `Xot::children`, `Xot::descendants` and the others, take 0.4 to 0.9 times
   as long as before.
 
