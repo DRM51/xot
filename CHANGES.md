@@ -331,30 +331,32 @@
   vector, and each later one is made with room for all its nodes and never
   moves, so that growing the arena copies at most the first chunk, where the
   vector that doubled copied all the nodes and held two copies of them for a
-  moment. A `Node` takes 8 bytes instead of 16. On a
-  generated document of 25 megabytes with 2.0M nodes, the heap after parsing
-  takes 130.9 MiB instead of 262.9 MiB, the heap peaks at 302.0 MiB instead of
-  530.0 MiB while parsing, parsing peaks at 429.5 MiB of resident memory
-  instead of 617.6 MiB, and it takes 389 ms instead of 453 ms. Two copies of
-  the document with `clone_node` and their serialization peak at 800.4 MiB of
-  resident memory instead of 1306.4 MiB, with 436.7 MiB of heap instead of
-  1140.7 MiB. Calls of `Xot::parent`, `Xot::first_child`,
-  `Xot::last_child`, `Xot::next_sibling` and `Xot::previous_sibling` take up
-  to 1.6 times as long, as each looks up the chunk of its node before it
-  reads the node: a walk up through `Xot::parent` 1.8 ns a step instead of
-  1.2 ns, one through the whole document by `first_child`, `next_sibling`
-  and `parent` 5.4 ns a node instead of 4.3 ns, and `last_child` of each of
-  100,000 elements 16 to 17 ns instead of 13 ns. Detaching an element of a
-  parsed document takes 1.1 to 1.3 times as long (77 ns instead of 68 ns for
-  one between two elements), and removing an element with a text 1.1 times
-  (158 ns instead of 141 ns), as `Xot::detach` and `Xot::remove` look up the
-  chunks of the node, of its siblings and of its parent. A loop that takes the last child
-  of each of 100,000 elements, an element appended to it, and removes it
-  takes 1.4 to 1.6 times as long (88 to 108 ns an element instead of 63 to
-  67 ns), where removing these children alone takes 1.2 times as long (56
-  to 58 ns instead of 47 ns). The iterators, `Xot::ancestors`,
-  `Xot::children`, `Xot::descendants` and the others, take 0.4 to 0.9 times
-  as long as before, but for two of them taken in step (see below).
+  moment. A `Node` takes 8 bytes instead of 16. On a generated document of 25
+  megabytes with 2.0M nodes, the heap after parsing takes 130.9 MiB instead of
+  262.9 MiB, the heap peaks at 302.0 MiB instead of 530.0 MiB while parsing,
+  parsing peaks at 429.5 MiB of resident memory instead of 617.6 MiB, and it
+  takes 389 ms instead of 453 ms. Two copies of the document with `clone_node`
+  and their serialization peak at 800.4 MiB of resident memory instead of
+  1306.4 MiB, with 436.7 MiB of heap instead of 1140.7 MiB. Calls of
+  `Xot::parent`, `Xot::first_child`, `Xot::last_child`, `Xot::next_sibling`
+  and `Xot::previous_sibling` take up to 1.6 times as long, as each looks up
+  the chunk of its node before it reads the node: a walk up through
+  `Xot::parent` 1.8 ns a step instead of 1.2 ns, one through the whole
+  document by `first_child`, `next_sibling` and `parent` 5.4 ns a node instead
+  of 4.3 ns, and `last_child` of each of 100,000 elements 16 to 17 ns instead
+  of 13 ns; other calls that look up a node do too, such as `Xot::text_mut`,
+  with which `Text::set` takes 15.1 ns instead of 13.2 ns. Detaching an
+  element of a parsed document takes 1.1 to 1.35 times as long (76 ns instead
+  of 67 ns for one between two elements, and 71 ns instead of 53 ns for one
+  without children), and removing an element with a text 1.1 times (158 ns
+  instead of 141 ns), as `Xot::detach` and `Xot::remove` look up the chunks of
+  the node, of its siblings and of its parent. A loop that takes the last
+  child of each of 100,000 elements, an element appended to it, and removes it
+  takes 1.4 to 1.6 times as long (88 to 108 ns an element instead of 63 to 67
+  ns), where removing these children alone takes 1.2 times as long (56 to 58
+  ns instead of 47 ns). The iterators, `Xot::ancestors`, `Xot::children`,
+  `Xot::descendants` and the others, take 0.4 to 0.9 times as long as before,
+  but for two of them taken in step (see below).
 
 - Attribute and namespace maps, and `first_child`, read each node once as
   they go through children, and the small accessors are inline, so that a
@@ -387,24 +389,25 @@
   `Xot::all_descendants` give iterators of their own, whose steps the compiler
   puts inline into the loops that take them, and through which `count`,
   `for_each` and the other methods that go through all the edges of a
-  traversal take the end of a node without children together with its start. From a node that is not
-  removed, and whose slot no later node took, they read only the positions of
-  the nodes, as no node of its tree is removed then, and take the generation
-  of each node from its slot; from another node they take the steps of before.
-  `Xot::deep_equal`, `Xot::deep_equal_xpath` and `Xot::advanced_deep_equal` go
-  through the two trees in one loop of their own, and compare the values that
-  the traversals read. On a generated document of 25 megabytes with 2.0M nodes
-  (ns a node): a loop over `traverse` that reads the text of each node takes
-  4.1 instead of 6.2, `traverse(..).count()` 2.1 instead of 3.4,
-  `all_traverse(..).count()` 1.8 instead of 3.4, `descendants(..).count()` 1.9
-  instead of 2.3, a loop over `descendants` that looks for elements 1.9
-  instead of 3.6, two `traverse` taken in step with `zip` 6.9 instead of 8.1,
-  `deep_equal` of the document and a copy of it 16.7 instead of 16.9,
-  `deep_equal_xpath` 19.8 instead of 40.2, and `traverse` and `descendants`
-  taken one step at a time through `dyn Iterator` 6.0 instead of 9.6 and 4.0
-  instead of 8.4. Two `all_traverse` or two `descendants` taken in step with
-  `zip` take longer than before: 5.8 instead of 4.3, and 6.2 instead of 5.4
-  (8.4 instead of 7.7 where the loop compares the values of the nodes too).
+  traversal take the end of a node without children together with its start.
+  From a node that is not removed, and whose slot no later node took, they
+  read only the positions of the nodes, as no node of its tree is removed
+  then, and take the generation of each node from its slot; from another node
+  they take the steps of before. `Xot::deep_equal`, `Xot::deep_equal_xpath`
+  and `Xot::advanced_deep_equal` go through the two trees in one loop of their
+  own, and compare the values that the traversals read. On a generated
+  document of 25 megabytes with 2.0M nodes (ns a node): a loop over `traverse`
+  that reads the text of each node takes 4.1 instead of 6.2,
+  `traverse(..).count()` 2.1 instead of 3.4, `all_traverse(..).count()` 1.8
+  instead of 3.4, `descendants(..).count()` 1.9 instead of 2.3, a loop over
+  `descendants` that looks for elements 1.9 instead of 3.6, two `traverse`
+  taken in step with `zip` 6.9 instead of 8.1, `deep_equal` of the document
+  and a copy of it 16.7 instead of 16.9, `deep_equal_xpath` 19.8 instead of
+  40.2, and `traverse` and `descendants` taken one step at a time through `dyn
+  Iterator` 6.0 instead of 9.6 and 4.0 instead of 8.4. Two `all_traverse` or
+  two `descendants` taken in step with `zip` take longer than before: 5.8
+  instead of 4.3, and 6.2 instead of 5.4 (8.4 instead of 7.7 where the loop
+  compares the values of the nodes too).
 
 - Removing a node no longer reads the nodes it refers to. A removed node
   keeps the generations of its parent and its previous sibling, which
@@ -420,7 +423,8 @@
   ns, and removing 14 namespace nodes of each of 100,000 elements 18.7 ns a
   node instead of 19.0 ns; removing a tree of elements without texts or
   attributes takes 6.6 ns a node instead of 6.3 ns, and a loop that makes an
-  element and removes it again 12.5 ns instead of 11.8 ns.
+  element and removes it again takes 1.3 to 1.4 times as long, 12.6 to 13.5
+  ns instead of 9.9 ns.
 
 - `Xot::parse` and `Xot::parse_fragment` no longer collect the span
   information that `Xot::parse_with_span_info` and
@@ -435,29 +439,31 @@
   of 302.0 MiB (the input text included) and at 167.8 MiB of resident
   memory instead of 429.5 MiB, and takes 284 ms instead of 383 ms.
 
-- Parsing allocates about once for each text node and attribute value, for
-  the string that the node keeps, instead of about 3.3 times for each node.
-  Names, prefixes and values borrow from the text until they go into the
-  tree. Each name and prefix is looked up in the `Xot` once in a parse, and
-  after that by the text it was read from, so that a name no longer takes a
-  new `String` for each element. An end tag with the prefix and the local
-  name of its start tag is not looked up at all. Text and attribute values
-  without a reference, a carriage return or, in attribute values, a tab or
-  a newline are copied as they are instead of character by character; those
-  with one are built in a string that the parser keeps from one to the next,
-  where they grew a new string each, and the tree gets a copy of their
-  length, as before. A text of 100,000 elements with escaped markup in each
-  takes 21.95 MiB of the memory of the allocator after parsing, as much as
-  the same text without references does, and parsing it makes 17
-  reallocations instead of 300,017. The room for the attributes and the namespace
-  declarations of an element is kept from one element to the next. Names,
-  prefixes and namespaces get their ids in the same order as before, also
-  when parsing fails. On a generated document of 25 megabytes with 2.0M
-  nodes, parsing makes
-  1,000,225 allocations instead of 6,500,920 and 21 reallocations instead of
-  499,916, keeps the same heap, and takes 0.45 times as long (136 ms against
-  301 ms in the same runs); `Xot::parse_with_span_info` takes 0.66 times as
-  long.
+- Parsing allocates about once for each text node and attribute value, for the
+  string that the node keeps, instead of about 3.3 times for each node. Names,
+  prefixes and values borrow from the text until they go into the tree. Each
+  name and prefix is looked up in the `Xot` once in a parse, and after that by
+  the text it was read from, so that a name no longer takes a new `String` for
+  each element. An end tag with the prefix and the local name of its start tag
+  is not looked up at all. Text and attribute values without a reference, a
+  carriage return or, in attribute values, a tab or a newline are copied as
+  they are instead of character by character; those with one are built in a
+  string that the parser keeps from one to the next, where they grew a new
+  string each, and the tree gets a copy of their length, as before. A text of
+  100,000 elements with escaped markup in each takes 21.95 MiB of the memory
+  of the allocator after parsing, as much as the same text without references
+  does, and parsing it makes 17 reallocations instead of 300,017. The room for
+  the attributes and the namespace declarations of an element is kept from one
+  element to the next. Names, prefixes and namespaces get their ids in the
+  same order as before, also when parsing fails. On a generated document of 25
+  megabytes with 2.0M nodes, parsing makes 1,000,225 allocations instead of
+  6,500,920 and 21 reallocations instead of 499,916, keeps the same heap, and
+  takes 0.45 times as long (136 ms against 301 ms in the same runs);
+  `Xot::parse_with_span_info` takes 0.66 times as long. An element with
+  thousands of namespace declarations, each of which is compared with those
+  before it, as before, takes 1.2 to 1.25 times as long to parse: 4.9 ms
+  instead of 4.1 ms for 5,000 declarations, and 17.4 ms instead of 13.9 ms for
+  10,000.
 
 - `Xot::clone_node` and `Xot::clone_with_prefixes` make each copy as they go
   through the tree they copy, instead of collecting the start and the end of
