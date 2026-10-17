@@ -49,10 +49,21 @@
 //! their generations; the generation in a handle read from it comes from the
 //! slot it refers to. A node only refers to nodes that are not removed, and
 //! these keep their generation, so this is the generation of the node at the
-//! time the reference was made. A removed node keeps the generations its
-//! five fields referred to when it was removed, as these slots can be taken
-//! by later nodes; a handle read from a removed node gets its generation from
-//! there.
+//! time the reference was made.
+//!
+//! A removed node keeps the generations of its parent and its previous
+//! sibling (see `FreeSlot::kept`): these can be removed before it, so that a
+//! later node can take their slots before one takes its own. Its other fields
+//! refer to nodes that were not removed when it was. Such a node can only be
+//! removed later, which puts its slot after this one on the free list; as
+//! later nodes take free slots in the order in which they were freed, no
+//! later node takes that slot before one takes this one, and until then the
+//! slot keeps the generation, which a handle read from the removed node gets
+//! from there. This depends on that order, so the free list must stay first
+//! in, first out. A slot with the generation `u32::MAX` is not put on the free
+//! list, and its node keeps the generations of all five fields. Where an
+//! operation changes one of the fields of a removed node, the node keeps the
+//! generation of the node it then refers to.
 //!
 //! The arena behaves as indextree 4.7.2 did, from which its operations are
 //! adapted, and the other modules depend on this:
@@ -193,9 +204,10 @@ enum SlotData<T> {
 struct FreeSlot {
     /// The position plus one of the next slot of the free list, 0 for none.
     next_free: u32,
-    /// The generations of the nodes that the fields in `Slot::link` refer
-    /// to, as they were when the node was removed, for the fields whose bit
-    /// is set in `kept`; 0 for the others.
+    /// For each entry of `Slot::link` whose bit is set in `kept`, the
+    /// generation of the node that the entry refers to: kept when the node
+    /// was removed, or when an operation changed the entry since; 0 for the
+    /// other entries.
     link_generations: [u32; 5],
     /// Bit `k` is set where entry `k` of `link_generations` holds the
     /// generation of the node that entry `k` of `Slot::link` refers to. Where
@@ -439,7 +451,8 @@ impl<T> Arena<T> {
 
     /// A new node with the data `data` and without parent, children or
     /// siblings, in the slot of the node removed first if there is one, else
-    /// in a new slot.
+    /// in a new slot. The slot freed first is taken first, as
+    /// `FreeSlot::kept` requires.
     ///
     /// Panics with `Too many nodes in the arena` if the arena has `u32::MAX`
     /// slots already and none is free.
@@ -534,6 +547,10 @@ impl<T> Arena<T> {
     }
 
     /// Put the free slot at `index1` at the end of the free list.
+    ///
+    /// [`Arena::new_node`] takes slots from the start of the list, so they are
+    /// taken in the order in which they were freed, which `FreeSlot::kept`
+    /// depends on.
     #[inline(always)]
     fn push_free(&mut self, index1: u32) {
         if self.last_free != 0 {
