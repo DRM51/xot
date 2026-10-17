@@ -678,14 +678,11 @@ impl<T> Arena<T> {
     /// unless the slot of `node_id` is free and kept it.
     #[inline(always)]
     fn read_link(&self, node_id: NodeId, k: usize) -> Option<NodeId> {
-        let source = node_id.index1.get();
-        let (chunk, place) = place(source);
-        let chunk = &self.chunks[chunk as usize];
-        let slot = &chunk[place];
+        let slot = self.slot(node_id.index1.get());
         let index1 = NonZeroU32::new(slot.link[k])?;
         let generation = match slot.kept_generation(k) {
             Some(generation) => generation,
-            None => target_slot(self, chunk, source, index1.get()).generation,
+            None => self.slot(index1.get()).generation,
         };
         Some(NodeId { index1, generation })
     }
