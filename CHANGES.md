@@ -343,9 +343,14 @@
   call looks up the chunk of its node before it reads the node: a walk up
   through `Xot::parent` 1.8 ns a step instead of 1.2 ns, and one through the
   whole document by `first_child`, `next_sibling` and `parent` 5.4 ns a node
-  instead of 4.3 ns. `Xot::deep_equal` takes 1.1 to 1.5 times as long. The
-  iterators, `Xot::ancestors`, `Xot::children`, `Xot::descendants` and the
-  others, take 0.4 to 0.9 times as long as before.
+  instead of 4.3 ns. `Xot::deep_equal` takes 1.1 to 1.5 times as long.
+  Detaching an element of a parsed document takes 1.1 to 1.3 times as long
+  (77 ns instead of 68 ns for one between two elements), and removing an
+  element with a text 1.1 times (158 ns instead of 141 ns), as
+  `Xot::detach` and `Xot::remove` look up the chunks of the node, of its
+  siblings and of its parent. The iterators, `Xot::ancestors`,
+  `Xot::children`, `Xot::descendants` and the others, take 0.4 to 0.9 times
+  as long as before.
 
 - Attribute and namespace maps, and `first_child`, read each node once as
   they go through children, and the small accessors are inline, so that a
@@ -379,8 +384,8 @@
   ns a node instead of 8.2 ns, removing a copy of it 7.5 ns instead of 8.3
   ns, and removing 14 namespace nodes of each of 100,000 elements 18.7 ns a
   node instead of 19.0 ns; removing a tree of elements without texts or
-  attributes takes 6.6 ns a node instead of 6.2 ns, and a loop that makes an
-  element and removes it again 12.0 ns instead of 11.7 ns.
+  attributes takes 6.6 ns a node instead of 6.3 ns, and a loop that makes an
+  element and removes it again 12.5 ns instead of 11.8 ns.
 
 - `Xot::parse` and `Xot::parse_fragment` no longer collect the span
   information that `Xot::parse_with_span_info` and
