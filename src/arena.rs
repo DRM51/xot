@@ -237,6 +237,15 @@ impl<T> Slot<T> {
         matches!(self.data, SlotData::Free(_))
     }
 
+    /// The data of the node, `None` for a removed node.
+    #[inline(always)]
+    fn data(&self) -> Option<&T> {
+        match &self.data {
+            SlotData::Live(data) => Some(data),
+            SlotData::Free(_) => None,
+        }
+    }
+
     /// The node that entry `k` of the fields of this slot refers to: with the
     /// generation of the slot it refers to, or from a free slot with the
     /// generation kept for it, if one is kept.
@@ -669,13 +678,56 @@ impl<T> Arena<T> {
     /// unless the slot of `node_id` is free and kept it.
     #[inline(always)]
     fn read_link(&self, node_id: NodeId, k: usize) -> Option<NodeId> {
-        let slot = self.slot(node_id.index1.get());
+        let source = node_id.index1.get();
+        let (chunk, place) = place(source);
+        let chunk = &self.chunks[chunk as usize];
+        let slot = &chunk[place];
         let index1 = NonZeroU32::new(slot.link[k])?;
         let generation = match slot.kept_generation(k) {
             Some(generation) => generation,
-            None => self.slot(index1.get()).generation,
+            None => target_slot(self, chunk, source, index1.get()).generation,
         };
         Some(NodeId { index1, generation })
+    }
+
+    /// The data of the node in the slot of `node_id`, and the node that entry
+    /// `k` of its fields refers to, with its data: [`Arena::get`] of the
+    /// node and of [`Arena::read_link`] in one go, which panics as that does
+    /// if either is removed.
+    #[inline(always)]
+    fn get_with_link(&self, node_id: NodeId, k: usize) -> (&T, Option<(NodeId, &T)>) {
+        let source = node_id.index1.get();
+        let (chunk, place) = place(source);
+        let chunk = &self.chunks[chunk as usize];
+        let slot = &chunk[place];
+        let data = live(slot.data());
+        let Some(index1) = NonZeroU32::new(slot.link[k]) else {
+            return (data, None);
+        };
+        // a slot that is not free keeps no generations
+        let target = target_slot(self, chunk, source, index1.get());
+        let node_id = NodeId {
+            index1,
+            generation: target.generation,
+        };
+        (data, Some((node_id, live(target.data()))))
+    }
+
+    /// The data of the node in the slot of `node_id`, and its next sibling
+    /// with its data, as [`Arena::get`] and [`Arena::next_sibling`] give
+    /// them, which panics if either is removed.
+    #[inline]
+    pub(crate) fn get_with_next_sibling(&self, node_id: NodeId) -> (&T, Option<(NodeId, &T)>) {
+        self.get_with_link(node_id, NEXT)
+    }
+
+    /// The data of the node in the slot of `node_id`, and its previous
+    /// sibling with its data, as [`Arena::get`] and
+    /// [`Arena::previous_sibling`] give them, which panics if either is
+    /// removed.
+    #[inline]
+    pub(crate) fn get_with_previous_sibling(&self, node_id: NodeId) -> (&T, Option<(NodeId, &T)>) {
+        self.get_with_link(node_id, PREVIOUS)
     }
 
     /// The parent of the node in the slot of `node_id`.
@@ -684,8 +736,10 @@ impl<T> Arena<T> {
         self.read_link(node_id, PARENT)
     }
 
-    /// The first child of the node in the slot of `node_id`.
-    #[inline]
+    /// The first child of the node in the slot of `node_id`. The crate reads
+    /// first children through [`Arena::children_data`] and the traversals;
+    /// the tests read them here.
+    #[cfg(test)]
     pub(crate) fn first_child(&self, node_id: NodeId) -> Option<NodeId> {
         self.read_link(node_id, FIRST)
     }
@@ -1427,7 +1481,19 @@ impl<T> Arena<T> {
     }
 
     /// The node and its descendants, in document order.
+    #[inline]
     pub(crate) fn descendants(&self, node_id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+        self.descendants_data(node_id).map(|(node_id, _)| node_id)
+    }
+
+    /// The node and its descendants, in document order, each with its data,
+    /// `None` for a removed node; [`live`] gives the data as [`Arena::get`]
+    /// does. The data comes from the slot that the step reads anyway.
+    #[inline]
+    pub(crate) fn descendants_data(
+        &self,
+        node_id: NodeId,
+    ) -> impl Iterator<Item = (NodeId, Option<&T>)> + '_ {
         Descendants {
             chunks: &self.chunks,
             root: node_id,
@@ -1438,11 +1504,23 @@ impl<T> Arena<T> {
     /// The edges of the node and its descendants, in document order: the
     /// start and the end of each node, with those of its descendants between
     /// them.
+    #[inline]
     pub(crate) fn traverse(&self, node_id: NodeId) -> impl Iterator<Item = NodeEdge> + '_ {
+        self.traverse_data(node_id).map(|(edge, _)| edge)
+    }
+
+    /// The edges of [`Arena::traverse`], each with the data of its node, as
+    /// [`Arena::descendants_data`] gives it.
+    #[inline]
+    pub(crate) fn traverse_data(
+        &self,
+        node_id: NodeId,
+    ) -> impl Iterator<Item = (NodeEdge, Option<&T>)> + '_ {
         Traverse {
             chunks: &self.chunks,
             root: node_id,
             next: Some(Edge::Start(Link::known(node_id))),
+            leaf: None,
         }
     }
 
@@ -1472,19 +1550,44 @@ impl<T> Arena<T> {
         state: &mut TraverseState,
     ) -> Option<(NodeEdge, Option<&T>)> {
         let (edge, slot) = traverse_next(&self.chunks, state.root, &mut state.next)?;
-        let data = match &slot.data {
-            SlotData::Live(data) => Some(data),
-            SlotData::Free(_) => None,
-        };
-        Some((edge, data))
+        Some((edge, slot.data()))
     }
 
     /// The edges of the node and its descendants, in reverse document order.
+    #[inline]
     pub(crate) fn reverse_traverse(&self, node_id: NodeId) -> impl Iterator<Item = NodeEdge> + '_ {
+        self.reverse_traverse_data(node_id).map(|(edge, _)| edge)
+    }
+
+    /// The edges of [`Arena::reverse_traverse`], each with the data of its
+    /// node, as [`Arena::descendants_data`] gives it.
+    #[inline]
+    pub(crate) fn reverse_traverse_data(
+        &self,
+        node_id: NodeId,
+    ) -> impl Iterator<Item = (NodeEdge, Option<&T>)> + '_ {
         ReverseTraverse {
             chunks: &self.chunks,
             root: node_id,
             next: Some(Edge::End(Link::known(node_id))),
+        }
+    }
+
+    /// The nodes after `node_id` in document order that are not its
+    /// descendants, each with its data, as [`Arena::descendants_data`] gives
+    /// it: the next sibling of the node, or of its nearest ancestor that has
+    /// one, then each node after it in document order, up to the end of the
+    /// tree. Each step reads one slot, and the slots of the ancestors it
+    /// climbs to where a node has no first child and no next sibling.
+    #[inline]
+    pub(crate) fn following(
+        &self,
+        node_id: NodeId,
+    ) -> impl Iterator<Item = (NodeId, Option<&T>)> + '_ {
+        let slot = self.slot(node_id.index1.get());
+        Following {
+            chunks: &self.chunks,
+            next: following_link(&self.chunks, slot),
         }
     }
 
@@ -1549,6 +1652,24 @@ impl<T: PartialEq + std::fmt::Debug> Arena<T> {
 fn slot_in<T>(chunks: &[Vec<Slot<T>>], index1: u32) -> &Slot<T> {
     let (chunk, place) = place(index1);
     &chunks[chunk as usize][place]
+}
+
+/// The slot with the position plus one `target`, which the slot with the
+/// position plus one `source`, in `chunk`, refers to: the nodes a node
+/// refers to are mostly in its own chunk, which is then not looked up again.
+#[inline(always)]
+fn target_slot<'a, T>(
+    arena: &'a Arena<T>,
+    chunk: &'a [Slot<T>],
+    source: u32,
+    target: u32,
+) -> &'a Slot<T> {
+    let (target_chunk, target_place) = place(target);
+    if target_chunk == place(source).0 {
+        &chunk[target_place]
+    } else {
+        arena.slot(target)
+    }
 }
 
 /// The reader of slots of the iterators that walk along siblings or up. It holds the chunks themselves
@@ -1716,11 +1837,11 @@ struct Descendants<'a, T> {
     next: Link,
 }
 
-impl<T> Iterator for Descendants<'_, T> {
-    type Item = NodeId;
+impl<'a, T> Iterator for Descendants<'a, T> {
+    type Item = (NodeId, Option<&'a T>);
 
     #[inline(always)]
-    fn next(&mut self) -> Option<NodeId> {
+    fn next(&mut self) -> Option<Self::Item> {
         let index1 = NonZeroU32::new(self.next.index1)?;
         let slot = slot_in(self.chunks, index1.get());
         let node_id = NodeId {
@@ -1752,7 +1873,7 @@ impl<T> Iterator for Descendants<'_, T> {
                 };
             }
         };
-        Some(node_id)
+        Some((node_id, slot.data()))
     }
 }
 
@@ -1772,51 +1893,36 @@ struct Traverse<'a, T> {
     chunks: &'a [Vec<Slot<T>>],
     root: NodeId,
     next: Option<Edge>,
+    /// The slot of a node without children whose start was the last edge:
+    /// its end, which `next` stands for, is the next edge, and takes the
+    /// slot from here.
+    leaf: Option<&'a Slot<T>>,
 }
 
-impl<T> Iterator for Traverse<'_, T> {
-    type Item = NodeEdge;
+impl<'a, T> Iterator for Traverse<'a, T> {
+    type Item = (NodeEdge, Option<&'a T>);
 
-    // the steps of `traverse_next`, without the slot: with a call of that,
-    // serializing a document took 1.01 times as long
     #[inline(always)]
-    fn next(&mut self) -> Option<NodeEdge> {
-        match self.next.take()? {
-            Edge::Start(link) => {
-                let index1 = NonZeroU32::new(link.index1)?;
-                let slot = slot_in(self.chunks, index1.get());
-                let node_id = NodeId {
-                    index1,
-                    generation: link.generation.unwrap_or(slot.generation),
-                };
-                self.next = Some(if slot.link[FIRST] != 0 {
-                    Edge::Start(slot.link_to(FIRST))
-                } else {
-                    Edge::End(Link::known(node_id))
-                });
-                Some(NodeEdge::Start(node_id))
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(slot) = self.leaf.take() {
+            // the end that `next` stands for, as `traverse_next` takes it
+            if let Some(Edge::End(link)) = self.next.take() {
+                if let Some(index1) = NonZeroU32::new(link.index1) {
+                    let node_id = NodeId {
+                        index1,
+                        generation: link.generation.unwrap_or(slot.generation),
+                    };
+                    self.next = after_end(slot, node_id, self.root);
+                    return Some((NodeEdge::End(node_id), slot.data()));
+                }
             }
-            Edge::End(link) => {
-                let index1 = NonZeroU32::new(link.index1)?;
-                let slot = slot_in(self.chunks, index1.get());
-                let node_id = NodeId {
-                    index1,
-                    generation: link.generation.unwrap_or(slot.generation),
-                };
-                self.next = if node_id == self.root {
-                    None
-                } else if slot.link[NEXT] != 0 {
-                    Some(Edge::Start(slot.link_to(NEXT)))
-                } else if slot.link[PARENT] != 0 {
-                    Some(Edge::End(slot.link_to(PARENT)))
-                } else {
-                    // only if the tree was changed during the traversal;
-                    // indextree stops then
-                    None
-                };
-                Some(NodeEdge::End(node_id))
-            }
+            unreachable!("the end of a node without children follows its start");
         }
+        let (edge, slot) = traverse_next(self.chunks, self.root, &mut self.next)?;
+        if matches!(edge, NodeEdge::Start(_)) && slot.link[FIRST] == 0 {
+            self.leaf = Some(slot);
+        }
+        Some((edge, slot.data()))
     }
 }
 
@@ -1859,19 +1965,26 @@ fn traverse_next<'a, T>(
                 index1,
                 generation: link.generation.unwrap_or(slot.generation),
             };
-            *next = if node_id == root {
-                None
-            } else if slot.link[NEXT] != 0 {
-                Some(Edge::Start(slot.link_to(NEXT)))
-            } else if slot.link[PARENT] != 0 {
-                Some(Edge::End(slot.link_to(PARENT)))
-            } else {
-                // only if the tree was changed during the traversal;
-                // indextree stops then
-                None
-            };
+            *next = after_end(slot, node_id, root);
             Some((NodeEdge::End(node_id), slot))
         }
+    }
+}
+
+/// The edge after the end of `node_id`, whose slot is `slot`, in a
+/// traversal of `root`, or `None` at the end.
+#[inline(always)]
+fn after_end<T>(slot: &Slot<T>, node_id: NodeId, root: NodeId) -> Option<Edge> {
+    if node_id == root {
+        None
+    } else if slot.link[NEXT] != 0 {
+        Some(Edge::Start(slot.link_to(NEXT)))
+    } else if slot.link[PARENT] != 0 {
+        Some(Edge::End(slot.link_to(PARENT)))
+    } else {
+        // only if the tree was changed during the traversal; indextree
+        // stops then
+        None
     }
 }
 
@@ -1886,11 +1999,11 @@ struct ReverseTraverse<'a, T> {
     next: Option<Edge>,
 }
 
-impl<T> Iterator for ReverseTraverse<'_, T> {
-    type Item = NodeEdge;
+impl<'a, T> Iterator for ReverseTraverse<'a, T> {
+    type Item = (NodeEdge, Option<&'a T>);
 
     #[inline(always)]
-    fn next(&mut self) -> Option<NodeEdge> {
+    fn next(&mut self) -> Option<Self::Item> {
         match self.next.take()? {
             Edge::End(link) => {
                 let index1 = NonZeroU32::new(link.index1)?;
@@ -1904,7 +2017,7 @@ impl<T> Iterator for ReverseTraverse<'_, T> {
                 } else {
                     Edge::Start(Link::known(node_id))
                 });
-                Some(NodeEdge::End(node_id))
+                Some((NodeEdge::End(node_id), slot.data()))
             }
             Edge::Start(link) => {
                 let index1 = NonZeroU32::new(link.index1)?;
@@ -1922,13 +2035,61 @@ impl<T> Iterator for ReverseTraverse<'_, T> {
                 } else {
                     None
                 };
-                Some(NodeEdge::Start(node_id))
+                Some((NodeEdge::Start(node_id), slot.data()))
             }
         }
     }
 }
 
 impl<T> std::iter::FusedIterator for ReverseTraverse<'_, T> {}
+
+/// The node after the node in `slot` in document order that is not one of
+/// its descendants: its next sibling, or that of its nearest ancestor that
+/// has one, or none.
+#[inline(always)]
+fn following_link<T>(chunks: &[Vec<Slot<T>>], slot: &Slot<T>) -> Link {
+    if slot.link[NEXT] != 0 {
+        return slot.link_to(NEXT);
+    }
+    let mut ancestor = slot.link[PARENT];
+    while ancestor != 0 {
+        let ancestor_slot = slot_in(chunks, ancestor);
+        if ancestor_slot.link[NEXT] != 0 {
+            return ancestor_slot.link_to(NEXT);
+        }
+        ancestor = ancestor_slot.link[PARENT];
+    }
+    Link::NONE
+}
+
+/// The nodes that [`Arena::following`] gives.
+#[derive(Clone)]
+struct Following<'a, T> {
+    chunks: &'a [Vec<Slot<T>>],
+    next: Link,
+}
+
+impl<'a, T> Iterator for Following<'a, T> {
+    type Item = (NodeId, Option<&'a T>);
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let index1 = NonZeroU32::new(self.next.index1)?;
+        let slot = slot_in(self.chunks, index1.get());
+        let node_id = NodeId {
+            index1,
+            generation: self.next.generation.unwrap_or(slot.generation),
+        };
+        self.next = if slot.link[FIRST] != 0 {
+            slot.link_to(FIRST)
+        } else {
+            following_link(self.chunks, slot)
+        };
+        Some((node_id, slot.data()))
+    }
+}
+
+impl<T> std::iter::FusedIterator for Following<'_, T> {}
 
 #[cfg(test)]
 mod tests;

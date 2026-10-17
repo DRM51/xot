@@ -733,6 +733,75 @@ fn traverse_step_gives_the_edges_of_traverse_with_their_data() {
     }
 }
 
+/// The nodes after `node`, as the crate's `Following` iterator gave them
+/// before the arena had [`Arena::following`]: by `first_child`, else by
+/// `next_sibling` of the node or of its nearest ancestor that has one, one
+/// read for each step.
+fn following_by_fields(arena: &Arena<u32>, node: NodeId) -> Vec<(NodeId, Option<u32>)> {
+    let after = |node: NodeId| {
+        if let Some(next) = arena.next_sibling(node) {
+            return Some(next);
+        }
+        let mut current = node;
+        while let Some(parent) = arena.parent(current) {
+            if let Some(next) = arena.next_sibling(parent) {
+                return Some(next);
+            }
+            current = parent;
+        }
+        None
+    };
+    let mut nodes = Vec::new();
+    let mut current = after(node);
+    while let Some(node) = current {
+        let data = (!arena.is_removed(node)).then(|| *arena.get(node));
+        nodes.push((node, data));
+        current = arena.first_child(node).or_else(|| after(node));
+    }
+    nodes
+}
+
+#[test]
+fn following_gives_the_nodes_that_the_fields_lead_to() {
+    let mut rng = Rng::new(17);
+    for _ in 0..100 {
+        let mut arena = Arena::new();
+        let mut made = vec![arena.new_node(0)];
+        let mut live = made.clone();
+        for value in 1..200u32 {
+            if live.len() > 1 && rng.chance(15) {
+                let node = live[1 + rng.below(live.len() - 1)];
+                if rng.chance(50) {
+                    arena.remove(node);
+                    live.retain(|&h| h != node);
+                } else {
+                    let removed: Vec<NodeId> = arena.descendants(node).collect();
+                    arena.remove_subtree(node);
+                    live.retain(|h| !removed.contains(h));
+                }
+            } else {
+                let parent = live[rng.below(live.len())];
+                let node = arena.new_node(value);
+                if rng.chance(20) {
+                    arena.checked_prepend(parent, node).unwrap();
+                } else {
+                    arena.checked_append(parent, node).unwrap();
+                }
+                made.push(node);
+                live.push(node);
+            }
+        }
+        // every handle: live, removed, and removed with its slot taken again
+        for &node in &made {
+            let following: Vec<(NodeId, Option<u32>)> = arena
+                .following(node)
+                .map(|(node_id, data)| (node_id, data.copied()))
+                .collect();
+            assert_eq!(following, following_by_fields(&arena, node));
+        }
+    }
+}
+
 #[test]
 fn traverse_step_reads_the_tree_as_it_is_when_new_nodes_take_free_slots() {
     let mut arena = Arena::new();

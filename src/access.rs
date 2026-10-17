@@ -471,11 +471,6 @@ impl Xot {
         }
     }
 
-    #[inline]
-    pub(crate) fn internal_first_child(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena.first_child(node.get())?))
-    }
-
     /// Get last child.
     ///
     /// Returns [`None`] if there are no children.
@@ -513,18 +508,12 @@ impl Xot {
     /// ```
     #[inline]
     pub fn next_sibling(&self, node: Node) -> Option<Node> {
-        let current_category = self.arena.get(node.get()).value_category();
-        let next_sibling = self.arena.next_sibling(node.get())?;
-        let next_category = self.arena.get(next_sibling).value_category();
-        if current_category != next_category {
+        let (value, next_sibling) = self.arena.get_with_next_sibling(node.get());
+        let (next_sibling, next_value) = next_sibling?;
+        if value.value_category() != next_value.value_category() {
             return None;
         }
         Some(Node::new(next_sibling))
-    }
-
-    #[inline]
-    pub(crate) fn internal_next_sibling(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena.next_sibling(node.get())?))
     }
 
     /// Get previous sibling.
@@ -532,10 +521,9 @@ impl Xot {
     /// Returns [`None`] if there is no previous sibling.
     #[inline]
     pub fn previous_sibling(&self, node: Node) -> Option<Node> {
-        let current_category = self.arena.get(node.get()).value_category();
-        let previous_sibling = self.arena.previous_sibling(node.get())?;
-        let previous_category = self.arena.get(previous_sibling).value_category();
-        if current_category != previous_category {
+        let (value, previous_sibling) = self.arena.get_with_previous_sibling(node.get());
+        let (previous_sibling, previous_value) = previous_sibling?;
+        if value.value_category() != previous_value.value_category() {
             return None;
         }
         Some(Node::new(previous_sibling))
@@ -641,24 +629,8 @@ impl Xot {
     }
 
     #[inline]
-    fn normal_filter(&self) -> impl Fn(&NodeId) -> bool + '_ {
-        |node_id| self.arena.get(*node_id).is_normal()
-    }
-
-    #[inline]
     fn normal_node_filter(&self) -> impl Fn(Node) -> bool + '_ {
         move |node| self.arena.get(node.get()).is_normal()
-    }
-
-    #[inline]
-    fn normal_edge_filter(&self) -> impl Fn(&ArenaNodeEdge) -> bool + '_ {
-        move |edge| {
-            let node_id = match edge {
-                ArenaNodeEdge::Start(node_id) => node_id,
-                ArenaNodeEdge::End(node_id) => node_id,
-            };
-            self.arena.get(*node_id).is_normal()
-        }
     }
 
     #[inline]
@@ -684,9 +656,9 @@ impl Xot {
     #[inline]
     pub fn descendants(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
         self.arena
-            .descendants(node.get())
-            .filter(self.normal_filter())
-            .map(Node::new)
+            .descendants_data(node.get())
+            .filter(|(_, value)| arena::live(*value).is_normal())
+            .map(|(node_id, _)| Node::new(node_id))
     }
 
     /// All the descendants of this node.
@@ -778,7 +750,10 @@ impl Xot {
     /// assert_eq!(siblings, vec![d, e, f, g, h]);
     /// ```
     pub fn following(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        Following::new(self, node, self.normal_node_filter())
+        self.arena
+            .following(node.get())
+            .filter(|(_, value)| arena::live(*value).is_normal())
+            .map(|(node_id, _)| Node::new(node_id))
     }
 
     /// Following nodes in document order.
@@ -786,7 +761,9 @@ impl Xot {
     /// Like [`Xot::following`] but includes namespace and
     /// attribute nodes too.
     pub fn all_following(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        Following::new(self, node, |_| true)
+        self.arena
+            .following(node.get())
+            .map(|(node_id, _)| Node::new(node_id))
     }
 
     /// Preceding nodes in document order
@@ -868,21 +845,15 @@ impl Xot {
     #[inline]
     pub fn traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
         self.arena
-            .traverse(node.get())
-            .filter(self.normal_edge_filter())
-            .map(|edge| match edge {
-                ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-                ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
-            })
+            .traverse_data(node.get())
+            .filter(|(_, value)| arena::live(*value).is_normal())
+            .map(|(edge, _)| node_edge(edge))
     }
 
     /// Traverse nodes, including namespace and attribute nodes.
     #[inline]
     pub fn all_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        self.arena.traverse(node.get()).map(|edge| match edge {
-            ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-            ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
-        })
+        self.arena.traverse(node.get()).map(node_edge)
     }
 
     /// Traverse over node edges in reverse order.
@@ -894,12 +865,9 @@ impl Xot {
     #[inline]
     pub fn reverse_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
         self.arena
-            .reverse_traverse(node.get())
-            .filter(self.normal_edge_filter())
-            .map(|edge| match edge {
-                ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-                ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
-            })
+            .reverse_traverse_data(node.get())
+            .filter(|(_, value)| arena::live(*value).is_normal())
+            .map(|(edge, _)| node_edge(edge))
     }
 
     /// Traverse nodes, including namespace and attribute nodes, in reverse order.
@@ -907,12 +875,7 @@ impl Xot {
     /// This is like [`Xot::all_traverse`] but includes namespace and
     #[inline]
     pub fn reverse_all_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        self.arena
-            .reverse_traverse(node.get())
-            .map(|edge| match edge {
-                ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
-                ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
-            })
+        self.arena.reverse_traverse(node.get()).map(node_edge)
     }
 
     /// Traverse over nodes in level order.
@@ -1023,6 +986,15 @@ impl Xot {
     }
 }
 
+/// The edge of the crate for an edge of the arena.
+#[inline(always)]
+fn node_edge(edge: ArenaNodeEdge) -> NodeEdge {
+    match edge {
+        ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
+        ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
+    }
+}
+
 struct ReversePreorder<'a, F: Fn(Node) -> bool> {
     xot: &'a Xot,
     current: Option<Node>,
@@ -1064,56 +1036,5 @@ impl<F: Fn(Node) -> bool> Iterator for ReversePreorder<'_, F> {
         } else {
             None
         }
-    }
-}
-
-struct Following<'a, F> {
-    xot: &'a Xot,
-    current: Option<Node>,
-    filter: F,
-}
-
-impl<'a, F: Fn(Node) -> bool> Following<'a, F> {
-    fn new(xot: &'a Xot, current: Node, filter: F) -> Self {
-        Self {
-            xot,
-            current: Self::following(current, xot),
-            filter,
-        }
-    }
-
-    fn following(node: Node, xot: &Xot) -> Option<Node> {
-        if let Some(next_sibling) = xot.internal_next_sibling(node) {
-            Some(next_sibling)
-        } else {
-            let mut current = node;
-            while let Some(parent) = xot.parent(current) {
-                let sibling = xot.internal_next_sibling(parent);
-                if let Some(sibling) = sibling {
-                    return Some(sibling);
-                } else {
-                    current = parent;
-                }
-            }
-            None
-        }
-    }
-}
-
-impl<F: Fn(Node) -> bool> Iterator for Following<'_, F> {
-    type Item = Node;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let node = self.current?;
-        self.current = if let Some(first_child) = self.xot.internal_first_child(node) {
-            Some(first_child)
-        } else {
-            Self::following(node, self.xot)
-        };
-        // if we don't pass the filter, then we do the next one
-        if !(self.filter)(node) {
-            return self.next();
-        }
-        Some(node)
     }
 }

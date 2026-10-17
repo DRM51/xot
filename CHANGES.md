@@ -336,11 +336,33 @@
   instead of 617.6 MiB, and it takes 389 ms instead of 453 ms. Two copies of
   the document with `clone_node` and their serialization peak at 800.4 MiB of
   resident memory instead of 1306.4 MiB, with 436.7 MiB of heap instead of
-  1140.7 MiB. Walks up through parents take about 0.6 ns a node more.
+  1140.7 MiB. A walk that calls `Xot::parent`, `Xot::first_child` or
+  `Xot::next_sibling` for each step takes up to 1.6 times as long, as each
+  call looks up the chunk of its node before it reads the node: a walk up
+  through `Xot::parent` 1.9 ns a step instead of 1.2 ns, and one through the
+  whole document by `first_child`, `next_sibling` and `parent` 5.4 ns a node
+  instead of 4.3 ns. `Xot::deep_equal` takes 1.1 to 1.5 times as long. The
+  iterators, `Xot::ancestors`, `Xot::children`, `Xot::descendants` and the
+  others, take 0.4 to 0.9 times as long as before.
 
 - Attribute and namespace maps, and `first_child`, read each node once as
   they go through children, and the small accessors are inline, so that a
   caller in another crate reads a node once for several of them.
+
+- `Xot::following` and `Xot::all_following` go through the nodes with an
+  iterator of the arena that reads each node once, where they took the first
+  child, the next sibling and the parent of each node in calls of their own.
+  `Xot::descendants`, `Xot::traverse` and `Xot::reverse_traverse` take the
+  value of each node from the step that reads the node, where the step and
+  then the check for namespace and attribute nodes each read it, and the end
+  of a node without children takes the slot that its start read.
+  `Xot::next_sibling` and `Xot::previous_sibling` read the node and its
+  sibling once each, and a sibling, a parent or a child in the chunk of its
+  node is read without looking up the chunk again. On a generated document
+  of 25 megabytes with 2.0M nodes, `following` of the first item takes 1.9 ns
+  a node instead of 4.9 ns, `traverse` 1.1 to 2.2 ns an edge instead of 1.8
+  to 3.3 ns, `descendants` 2.1 to 2.3 ns a node instead of 2.3 to 2.5 ns, and
+  `next_sibling` and `previous_sibling` 1.3 ns instead of 2.4 ns.
 
 - Removing a node no longer reads the nodes it refers to. A removed node
   keeps the generations of its parent and its previous sibling, which
