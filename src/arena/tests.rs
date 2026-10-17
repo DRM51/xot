@@ -889,6 +889,88 @@ fn reverse_preorder_gives_the_nodes_that_the_fields_lead_to() {
     }
 }
 
+/// The edges of `edges` as `(start, handle, data)`, taken one at a time.
+fn edge_steps<'a>(
+    edges: &mut impl Iterator<Item = (NodeEdge, Option<&'a u32>)>,
+) -> Vec<(bool, (u32, u32), Option<u32>)> {
+    let mut steps = Vec::new();
+    for (edge, data) in edges {
+        let (start, node_id) = match edge {
+            NodeEdge::Start(node_id) => (true, node_id),
+            NodeEdge::End(node_id) => (false, node_id),
+        };
+        steps.push((start, my_key(node_id), data.copied()));
+    }
+    steps
+}
+
+#[test]
+fn traversals_from_current_and_other_roots_agree_with_their_steps() {
+    // the short way from a root that is current, and the general one from a
+    // removed root or one whose slot a later node took, against the steps of
+    // `traverse_step`, which always take the general one; and `fold` of a
+    // traversal against its steps, from the start and from any edge
+    let mut rng = Rng::new(31);
+    for _ in 0..100 {
+        let mut arena = Arena::new();
+        let mut made = vec![arena.new_node(0)];
+        let mut live = made.clone();
+        for value in 1..150u32 {
+            if live.len() > 1 && rng.chance(15) {
+                let node = live[1 + rng.below(live.len() - 1)];
+                if rng.chance(50) {
+                    arena.remove(node);
+                    live.retain(|&h| h != node);
+                } else {
+                    let removed: Vec<NodeId> = arena.descendants(node).collect();
+                    arena.remove_subtree(node);
+                    live.retain(|h| !removed.contains(h));
+                }
+            } else {
+                let parent = live[rng.below(live.len())];
+                let node = arena.new_node(value);
+                arena.checked_append(parent, node).unwrap();
+                made.push(node);
+                live.push(node);
+            }
+        }
+        for &node in &made {
+            let steps = edge_steps(&mut arena.traverse_data(node));
+            assert_eq!(steps, stepped(&arena, node));
+            let fold = |edges: Traverse<'_, u32>, steps: Vec<_>| {
+                edges.fold(steps, |mut steps, (edge, data)| {
+                    let (start, node_id) = match edge {
+                        NodeEdge::Start(node_id) => (true, node_id),
+                        NodeEdge::End(node_id) => (false, node_id),
+                    };
+                    steps.push((start, my_key(node_id), data.copied()));
+                    steps
+                })
+            };
+            assert_eq!(fold(arena.traverse_data(node), Vec::new()), steps);
+            for taken in 1..steps.len().min(6) {
+                let mut edges = arena.traverse_data(node);
+                let first = edge_steps(&mut edges.by_ref().take(taken));
+                assert_eq!(fold(edges, first), steps);
+            }
+            // the nodes of the start edges
+            let descendants: Vec<(NodeId, Option<u32>)> = arena
+                .descendants_data(node)
+                .map(|(node_id, data)| (node_id, data.copied()))
+                .collect();
+            let starts: Vec<(NodeId, Option<u32>)> = steps
+                .iter()
+                .filter(|(start, _, _)| *start)
+                .map(|&(_, (index1, generation), data)| {
+                    let index1 = NonZeroU32::new(index1).unwrap();
+                    (NodeId { index1, generation }, data)
+                })
+                .collect();
+            assert_eq!(descendants, starts);
+        }
+    }
+}
+
 #[test]
 fn traverse_step_reads_the_tree_as_it_is_when_new_nodes_take_free_slots() {
     let mut arena = Arena::new();

@@ -735,23 +735,23 @@ impl Xot {
         F: Fn(Node) -> bool,
         C: Fn(&str, &str) -> bool,
     {
-        let filter_edge = |edge: &NodeEdge| {
-            let node = match edge {
-                NodeEdge::Start(node) | NodeEdge::End(node) => *node,
+        // the edges of `Xot::traverse`, each with the value of its node,
+        // which the comparison of two starts takes
+        let mut edges_a = self.traverse_values(a);
+        let mut edges_b = self.traverse_values(b);
+        // the pairs that `zip` of the two traversals with the filter gives,
+        // in a loop of its own, so that the steps of both are taken in it
+        while let Some(edge_a) = next_passing(&mut edges_a, &filter) {
+            let Some(edge_b) = next_passing(&mut edges_b, &filter) else {
+                break;
             };
-            filter(node)
-        };
-
-        let mut edges_a = self.traverse(a).filter(filter_edge);
-        let mut edges_b = self.traverse(b).filter(filter_edge);
-        for edge_pair in edges_a.by_ref().zip(edges_b.by_ref()) {
-            match edge_pair {
-                (NodeEdge::Start(a), NodeEdge::Start(b)) => {
-                    if !self.advanced_compare_value(a, b, &text_compare) {
+            match (edge_a, edge_b) {
+                ((NodeEdge::Start(a), a_value), (NodeEdge::Start(b), b_value)) => {
+                    if !self.advanced_compare_values(a, a_value, b, b_value, &text_compare) {
                         return false;
                     }
                 }
-                (NodeEdge::End(_a), NodeEdge::End(_b)) => {
+                ((NodeEdge::End(_a), _), (NodeEdge::End(_b), _)) => {
                     // If there is only a difference in structure, not value,
                     // the default case will fire
                 }
@@ -761,7 +761,9 @@ impl Xot {
             }
         }
         // if we have leftover elements in the iterators, the trees are not equal
-        if edges_a.next().is_some() || edges_b.next().is_some() {
+        if next_passing(&mut edges_a, &filter).is_some()
+            || next_passing(&mut edges_b, &filter).is_some()
+        {
             return false;
         }
         true
@@ -771,8 +773,23 @@ impl Xot {
     where
         C: Fn(&str, &str) -> bool,
     {
-        let a_value = self.value(a);
-        let b_value = self.value(b);
+        self.advanced_compare_values(a, self.value(a), b, self.value(b), text_compare)
+    }
+
+    /// [`Xot::advanced_compare_value`] of `a` and `b`, whose values are
+    /// `a_value` and `b_value`.
+    #[inline]
+    fn advanced_compare_values<C>(
+        &self,
+        a: Node,
+        a_value: &Value,
+        b: Node,
+        b_value: &Value,
+        text_compare: C,
+    ) -> bool
+    where
+        C: Fn(&str, &str) -> bool,
+    {
         match (a_value, b_value) {
             (Value::Document, Value::Document) => true,
             (Value::Element(a_element), Value::Element(b_element)) => {
@@ -889,4 +906,19 @@ fn descendants_to_string(xot: &Xot, node: Node) -> String {
         r.push_str(text);
     }
     r
+}
+
+/// The next edge of `edges` whose node passes `filter`, with its value.
+#[inline(always)]
+fn next_passing<'a>(
+    edges: &mut impl Iterator<Item = (NodeEdge, &'a Value)>,
+    filter: &impl Fn(Node) -> bool,
+) -> Option<(NodeEdge, &'a Value)> {
+    loop {
+        let (edge, value) = edges.next()?;
+        let (NodeEdge::Start(node) | NodeEdge::End(node)) = edge;
+        if filter(node) {
+            return Some((edge, value));
+        }
+    }
 }

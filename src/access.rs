@@ -640,10 +640,9 @@ impl Xot {
     /// ```
     #[inline]
     pub fn descendants(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        self.arena
-            .descendants_data(node.get())
-            .filter(|(_, value)| arena::live(*value).is_normal())
-            .map(|(node_id, _)| Node::new(node_id))
+        NormalDescendants {
+            nodes: self.arena.descendants_data(node.get()),
+        }
     }
 
     /// All the descendants of this node.
@@ -653,7 +652,9 @@ impl Xot {
     /// attribute nodes and attribute nodes come before normal children
     #[inline]
     pub fn all_descendants(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        self.arena.descendants(node.get()).map(Node::new)
+        AllDescendants {
+            nodes: self.arena.descendants_data(node.get()),
+        }
     }
 
     /// Reverse preorder traversal from node.
@@ -834,16 +835,29 @@ impl Xot {
     /// ```
     #[inline]
     pub fn traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        self.arena
-            .traverse_data(node.get())
-            .filter(|(_, value)| arena::live(*value).is_normal())
-            .map(|(edge, _)| node_edge(edge))
+        NormalEdges {
+            edges: self.arena.traverse_data(node.get()),
+        }
+    }
+
+    /// The edges of [`Xot::traverse`], each with the value of its node, as
+    /// [`Xot::value`] gives it.
+    #[inline]
+    pub(crate) fn traverse_values(
+        &self,
+        node: Node,
+    ) -> impl Iterator<Item = (NodeEdge, &Value)> + '_ {
+        NormalEdgeValues {
+            edges: self.arena.traverse_data(node.get()),
+        }
     }
 
     /// Traverse nodes, including namespace and attribute nodes.
     #[inline]
     pub fn all_traverse(&self, node: Node) -> impl Iterator<Item = NodeEdge> + '_ {
-        self.arena.traverse(node.get()).map(node_edge)
+        AllEdges {
+            edges: self.arena.traverse_data(node.get()),
+        }
     }
 
     /// Traverse over node edges in reverse order.
@@ -984,3 +998,133 @@ fn node_edge(edge: ArenaNodeEdge) -> NodeEdge {
         ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
     }
 }
+
+// The iterators of `Xot::traverse`, `Xot::all_traverse`, `Xot::descendants`
+// and `Xot::all_descendants`. The compiler puts each step inline where it is
+// taken, as it put the steps of indextree's iterators: a step through
+// `Filter` and `Map` was too large for loops that take two of them at once or
+// do more with each node, which then called it for each edge.
+
+/// The edges of [`Xot::traverse`]: those of the arena without the edges of
+/// namespace and attribute nodes.
+struct NormalEdges<'a> {
+    edges: arena::Traverse<'a, Value>,
+}
+
+impl Iterator for NormalEdges<'_> {
+    type Item = NodeEdge;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<NodeEdge> {
+        loop {
+            let (edge, value) = self.edges.next()?;
+            if arena::live(value).is_normal() {
+                return Some(node_edge(edge));
+            }
+        }
+    }
+
+    #[inline]
+    fn fold<B, F>(self, seed: B, mut f: F) -> B
+    where
+        F: FnMut(B, NodeEdge) -> B,
+    {
+        self.edges.fold(seed, move |acc, (edge, value)| {
+            if arena::live(value).is_normal() {
+                f(acc, node_edge(edge))
+            } else {
+                acc
+            }
+        })
+    }
+}
+
+impl std::iter::FusedIterator for NormalEdges<'_> {}
+
+/// The edges of [`Xot::traverse_values`]: those of [`Xot::traverse`], each
+/// with the value of its node.
+struct NormalEdgeValues<'a> {
+    edges: arena::Traverse<'a, Value>,
+}
+
+impl<'a> Iterator for NormalEdgeValues<'a> {
+    type Item = (NodeEdge, &'a Value);
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<(NodeEdge, &'a Value)> {
+        loop {
+            let (edge, value) = self.edges.next()?;
+            let value = arena::live(value);
+            if value.is_normal() {
+                return Some((node_edge(edge), value));
+            }
+        }
+    }
+}
+
+impl std::iter::FusedIterator for NormalEdgeValues<'_> {}
+
+/// The edges of [`Xot::all_traverse`].
+struct AllEdges<'a> {
+    edges: arena::Traverse<'a, Value>,
+}
+
+impl Iterator for AllEdges<'_> {
+    type Item = NodeEdge;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<NodeEdge> {
+        let (edge, _) = self.edges.next()?;
+        Some(node_edge(edge))
+    }
+
+    #[inline]
+    fn fold<B, F>(self, seed: B, mut f: F) -> B
+    where
+        F: FnMut(B, NodeEdge) -> B,
+    {
+        self.edges
+            .fold(seed, move |acc, (edge, _)| f(acc, node_edge(edge)))
+    }
+}
+
+impl std::iter::FusedIterator for AllEdges<'_> {}
+
+/// The nodes of [`Xot::descendants`]: those of the arena without namespace
+/// and attribute nodes.
+struct NormalDescendants<'a> {
+    nodes: arena::Descendants<'a, Value>,
+}
+
+impl Iterator for NormalDescendants<'_> {
+    type Item = Node;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Node> {
+        loop {
+            let (node_id, value) = self.nodes.next()?;
+            if arena::live(value).is_normal() {
+                return Some(Node::new(node_id));
+            }
+        }
+    }
+}
+
+impl std::iter::FusedIterator for NormalDescendants<'_> {}
+
+/// The nodes of [`Xot::all_descendants`].
+struct AllDescendants<'a> {
+    nodes: arena::Descendants<'a, Value>,
+}
+
+impl Iterator for AllDescendants<'_> {
+    type Item = Node;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Node> {
+        let (node_id, _) = self.nodes.next()?;
+        Some(Node::new(node_id))
+    }
+}
+
+impl std::iter::FusedIterator for AllDescendants<'_> {}

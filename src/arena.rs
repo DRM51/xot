@@ -689,6 +689,17 @@ impl<T> Arena<T> {
         self.slot(node_id.index1.get()).is_free()
     }
 
+    /// Whether `node_id` is the handle of the node in its slot, which is not
+    /// removed: then neither are the nodes of its tree, as a node that is
+    /// not removed refers only to such nodes, so that the handle read from
+    /// any of them has the generation of its slot. The traversals take the
+    /// short way through such a tree.
+    #[inline(always)]
+    fn is_current(&self, node_id: NodeId) -> bool {
+        let slot = self.slot(node_id.index1.get());
+        !slot.is_free() && slot.generation == node_id.generation
+    }
+
     /// The node that entry `k` of the fields of the slot of `node_id` refers
     /// to. The generation comes from the slot of that node, read as
     /// [`Arena::get`] reads it, so that the compiler can share the two reads,
@@ -1494,8 +1505,9 @@ impl<T> Arena<T> {
         None
     }
 
-    /// The node and its descendants, in document order.
-    #[inline]
+    /// The node and its descendants, in document order. The crate goes
+    /// through them with [`Arena::descendants_data`]; the tests use this.
+    #[cfg(test)]
     pub(crate) fn descendants(&self, node_id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         self.descendants_data(node_id).map(|(node_id, _)| node_id)
     }
@@ -1504,21 +1516,31 @@ impl<T> Arena<T> {
     /// `None` for a removed node; [`live`] gives the data as [`Arena::get`]
     /// does. The data comes from the slot that the step reads anyway.
     #[inline]
-    pub(crate) fn descendants_data(
-        &self,
-        node_id: NodeId,
-    ) -> impl Iterator<Item = (NodeId, Option<&T>)> + '_ {
+    pub(crate) fn descendants_data(&self, node_id: NodeId) -> Descendants<'_, T> {
+        let general = (!self.is_current(node_id)).then(|| {
+            Box::new(GeneralDescendants {
+                root: node_id,
+                next: Link::known(node_id),
+            })
+        });
         Descendants {
             chunks: &self.chunks,
-            root: node_id,
-            next: Link::known(node_id),
+            // the steps from a root that is not current go through `general`
+            next: if general.is_none() {
+                node_id.index1.get()
+            } else {
+                0
+            },
+            root: node_id.index1.get(),
+            general,
         }
     }
 
     /// The edges of the node and its descendants, in document order: the
     /// start and the end of each node, with those of its descendants between
-    /// them.
-    #[inline]
+    /// them. The crate goes through them with [`Arena::traverse_data`]; the
+    /// tests use this.
+    #[cfg(test)]
     pub(crate) fn traverse(&self, node_id: NodeId) -> impl Iterator<Item = NodeEdge> + '_ {
         self.traverse_data(node_id).map(|(edge, _)| edge)
     }
@@ -1526,15 +1548,15 @@ impl<T> Arena<T> {
     /// The edges of [`Arena::traverse`], each with the data of its node, as
     /// [`Arena::descendants_data`] gives it.
     #[inline]
-    pub(crate) fn traverse_data(
-        &self,
-        node_id: NodeId,
-    ) -> impl Iterator<Item = (NodeEdge, Option<&T>)> + '_ {
+    pub(crate) fn traverse_data(&self, node_id: NodeId) -> Traverse<'_, T> {
+        let general = (!self.is_current(node_id)).then(|| Box::new(self.traverse_start(node_id)));
         Traverse {
             chunks: &self.chunks,
-            root: node_id,
-            next: Some(Edge::Start(Link::known(node_id))),
+            // the steps from a root that is not current go through `general`
+            next: general.is_none().then_some(FastEdge::Start(node_id.index1)),
+            root: node_id.index1.get(),
             leaf: None,
+            general,
         }
     }
 
@@ -1861,9 +1883,28 @@ impl<T> std::iter::FusedIterator for Ancestors<'_, T> {}
 /// the start edges of [`Traverse`]). Each node takes one step, which reads
 /// its slot, and the slots of the ancestors it climbs to where it has no
 /// first child: the end edges in between.
+///
+/// From a root that [`Arena::is_current`] holds for, no node on the way is
+/// removed, and each step only reads positions, with the generation of each
+/// node from its slot. From another root, a removed one or one whose slot a
+/// later node took, the steps take the generations that free slots kept
+/// too, in [`descendants_general`].
 #[derive(Clone)]
-struct Descendants<'a, T> {
+pub(crate) struct Descendants<'a, T> {
     chunks: &'a [Vec<Slot<T>>],
+    /// The position plus one of the slot of the next node, 0 at the end.
+    next: u32,
+    /// The position plus one of the slot of the root.
+    root: u32,
+    /// The traversal from a root that is not current, `None` for a root that
+    /// is; in a box, so that the steps of the other traversals keep their
+    /// state in registers.
+    general: Option<Box<GeneralDescendants>>,
+}
+
+/// The state of [`Descendants`] from a root that is not current.
+#[derive(Clone, Copy)]
+struct GeneralDescendants {
     root: NodeId,
     next: Link,
 }
@@ -1873,39 +1914,86 @@ impl<'a, T> Iterator for Descendants<'a, T> {
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
-        let index1 = NonZeroU32::new(self.next.index1)?;
-        let slot = slot_in(self.chunks, index1.get());
-        let node_id = NodeId {
-            index1,
-            generation: self.next.generation.unwrap_or(slot.generation),
+        let Some(index1) = NonZeroU32::new(self.next) else {
+            // the end, or a step from a root that is not current
+            return descendants_general(self.chunks, self.general.as_deref_mut()?);
         };
+        let slot = slot_in(self.chunks, index1.get());
+        debug_assert!(
+            !slot.is_free(),
+            "a removed node in a tree that is not removed"
+        );
         self.next = if slot.link[FIRST] != 0 {
-            slot.link_to(FIRST)
+            slot.link[FIRST]
         } else {
             // the end of this node, then of each ancestor up to one with a
             // next sibling, as `Traverse` goes, stopping at the root
-            let mut current = node_id;
+            let mut current = index1.get();
             let mut current_slot = slot;
             loop {
                 if current == self.root {
-                    break Link::NONE;
+                    break 0;
                 }
                 if current_slot.link[NEXT] != 0 {
-                    break current_slot.link_to(NEXT);
+                    break current_slot.link[NEXT];
                 }
-                let parent = current_slot.link_to(PARENT);
-                let Some(parent_index1) = NonZeroU32::new(parent.index1) else {
-                    break Link::NONE;
-                };
-                current_slot = slot_in(self.chunks, parent_index1.get());
-                current = NodeId {
-                    index1: parent_index1,
-                    generation: parent.generation.unwrap_or(current_slot.generation),
-                };
+                current = current_slot.link[PARENT];
+                if current == 0 {
+                    break 0;
+                }
+                current_slot = slot_in(self.chunks, current);
             }
+        };
+        let node_id = NodeId {
+            index1,
+            generation: slot.generation,
         };
         Some((node_id, slot.data()))
     }
+}
+
+/// A step of [`Descendants`] from a root that is not current: the node that
+/// the state in `general` leads to with its data, `None` at the end, and the
+/// state after it there.
+#[cold]
+#[inline(never)]
+fn descendants_general<'a, T>(
+    chunks: &'a [Vec<Slot<T>>],
+    general: &mut GeneralDescendants,
+) -> Option<(NodeId, Option<&'a T>)> {
+    let GeneralDescendants { root, next } = general;
+    let index1 = NonZeroU32::new(next.index1)?;
+    let slot = slot_in(chunks, index1.get());
+    let node_id = NodeId {
+        index1,
+        generation: next.generation.unwrap_or(slot.generation),
+    };
+    *next = if slot.link[FIRST] != 0 {
+        slot.link_to(FIRST)
+    } else {
+        // the end of this node, then of each ancestor up to one with a next
+        // sibling, as `Traverse` goes, stopping at the root
+        let mut current = node_id;
+        let mut current_slot = slot;
+        loop {
+            if current == *root {
+                break Link::NONE;
+            }
+            if current_slot.link[NEXT] != 0 {
+                break current_slot.link_to(NEXT);
+            }
+            let parent = current_slot.link_to(PARENT);
+            let Some(parent_index1) = NonZeroU32::new(parent.index1) else {
+                break Link::NONE;
+            };
+            current_slot = slot_in(chunks, parent_index1.get());
+            current = NodeId {
+                index1: parent_index1,
+                generation: parent.generation.unwrap_or(current_slot.generation),
+            };
+        }
+    };
+    Some((node_id, slot.data()))
 }
 
 impl<T> std::iter::FusedIterator for Descendants<'_, T> {}
@@ -1918,16 +2006,53 @@ enum Edge {
 }
 
 /// The edges of a node and its descendants (indextree's `Traverse`). Each
-/// step reads one slot.
+/// step reads one slot, but for the end of a node without children, which
+/// takes the slot that its start read.
+///
+/// From a root that [`Arena::is_current`] holds for, no node on the way is
+/// removed, and each step only reads positions, with the generation of each
+/// node from its slot. From another root, a removed one or one whose slot a
+/// later node took, the steps of [`traverse_next`] take the generations that
+/// free slots kept too, in [`traverse_general`].
 #[derive(Clone)]
-struct Traverse<'a, T> {
+pub(crate) struct Traverse<'a, T> {
     chunks: &'a [Vec<Slot<T>>],
-    root: NodeId,
-    next: Option<Edge>,
+    /// The next edge, `None` at the end and for a root that is not current.
+    next: Option<FastEdge>,
+    /// The position plus one of the slot of the root.
+    root: u32,
     /// The slot of a node without children whose start was the last edge:
     /// its end, which `next` stands for, is the next edge, and takes the
     /// slot from here.
     leaf: Option<&'a Slot<T>>,
+    /// The traversal from a root that is not current, `None` for a root that
+    /// is; in a box, so that the steps of the other traversals keep their
+    /// state in registers.
+    general: Option<Box<TraverseState>>,
+}
+
+/// The next edge of a traversal from a root that is current: the start or
+/// the end of the node in the slot at a position plus one.
+#[derive(Clone, Copy)]
+enum FastEdge {
+    Start(NonZeroU32),
+    End(NonZeroU32),
+}
+
+/// The edge after the end of the node at `index1`, whose slot is `slot`, in
+/// a traversal of the root at `root`: the start of its next sibling, else
+/// the end of its parent, or `None` after the end of the root.
+#[inline(always)]
+fn fast_after_end<T>(slot: &Slot<T>, index1: NonZeroU32, root: u32) -> Option<FastEdge> {
+    if index1.get() == root {
+        None
+    } else if let Some(next) = NonZeroU32::new(slot.link[NEXT]) {
+        Some(FastEdge::Start(next))
+    } else {
+        // the end of the parent; without one, which only a change of the
+        // tree during the traversal leaves, it stops, as indextree does
+        NonZeroU32::new(slot.link[PARENT]).map(FastEdge::End)
+    }
 }
 
 impl<'a, T> Iterator for Traverse<'a, T> {
@@ -1936,25 +2061,120 @@ impl<'a, T> Iterator for Traverse<'a, T> {
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(slot) = self.leaf.take() {
-            // the end that `next` stands for, as `traverse_next` takes it
-            if let Some(Edge::End(link)) = self.next.take() {
-                if let Some(index1) = NonZeroU32::new(link.index1) {
-                    let node_id = NodeId {
-                        index1,
-                        generation: link.generation.unwrap_or(slot.generation),
-                    };
-                    self.next = after_end(slot, node_id, self.root);
-                    return Some((NodeEdge::End(node_id), slot.data()));
-                }
+            // the end that `next` stands for
+            if let Some(FastEdge::End(index1)) = self.next.take() {
+                let node_id = NodeId {
+                    index1,
+                    generation: slot.generation,
+                };
+                self.next = fast_after_end(slot, index1, self.root);
+                return Some((NodeEdge::End(node_id), slot.data()));
             }
             unreachable!("the end of a node without children follows its start");
         }
-        let (edge, slot) = traverse_next(self.chunks, self.root, &mut self.next)?;
-        if matches!(edge, NodeEdge::Start(_)) && slot.link[FIRST] == 0 {
-            self.leaf = Some(slot);
+        let Some(edge) = self.next.take() else {
+            // the end, or a step from a root that is not current
+            return traverse_general(self.chunks, self.general.as_deref_mut()?);
+        };
+        match edge {
+            FastEdge::Start(index1) => {
+                let slot = slot_in(self.chunks, index1.get());
+                debug_assert!(
+                    !slot.is_free(),
+                    "a removed node in a tree that is not removed"
+                );
+                let node_id = NodeId {
+                    index1,
+                    generation: slot.generation,
+                };
+                self.next = Some(match NonZeroU32::new(slot.link[FIRST]) {
+                    Some(first) => FastEdge::Start(first),
+                    None => {
+                        self.leaf = Some(slot);
+                        FastEdge::End(index1)
+                    }
+                });
+                Some((NodeEdge::Start(node_id), slot.data()))
+            }
+            FastEdge::End(index1) => {
+                let slot = slot_in(self.chunks, index1.get());
+                debug_assert!(
+                    !slot.is_free(),
+                    "a removed node in a tree that is not removed"
+                );
+                let node_id = NodeId {
+                    index1,
+                    generation: slot.generation,
+                };
+                self.next = fast_after_end(slot, index1, self.root);
+                Some((NodeEdge::End(node_id), slot.data()))
+            }
         }
-        Some((edge, slot.data()))
     }
+
+    /// The edges that [`Traverse::next`] gives, in a loop that takes the end
+    /// of a node without children together with its start, for `count`,
+    /// `for_each` and the other ways to go through all of them.
+    #[inline]
+    fn fold<B, F>(self, seed: B, mut f: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        let mut acc = seed;
+        if self.general.is_some() {
+            for item in self {
+                acc = f(acc, item);
+            }
+            return acc;
+        }
+        let mut next = self.next;
+        if let Some(slot) = self.leaf {
+            // the end of the node without children whose start came last
+            let Some(FastEdge::End(index1)) = next else {
+                unreachable!("the end of a node without children follows its start");
+            };
+            let node_id = NodeId {
+                index1,
+                generation: slot.generation,
+            };
+            acc = f(acc, (NodeEdge::End(node_id), slot.data()));
+            next = fast_after_end(slot, index1, self.root);
+        }
+        while let Some(edge) = next {
+            let (FastEdge::Start(index1) | FastEdge::End(index1)) = edge;
+            let slot = slot_in(self.chunks, index1.get());
+            debug_assert!(
+                !slot.is_free(),
+                "a removed node in a tree that is not removed"
+            );
+            let node_id = NodeId {
+                index1,
+                generation: slot.generation,
+            };
+            if let FastEdge::Start(_) = edge {
+                acc = f(acc, (NodeEdge::Start(node_id), slot.data()));
+                if let Some(first) = NonZeroU32::new(slot.link[FIRST]) {
+                    next = Some(FastEdge::Start(first));
+                    continue;
+                }
+            }
+            acc = f(acc, (NodeEdge::End(node_id), slot.data()));
+            next = fast_after_end(slot, index1, self.root);
+        }
+        acc
+    }
+}
+
+/// A step of [`Traverse`] from a root that is not current: the edge that
+/// `state` stands for with the data of its node, `None` at the end, and the
+/// state after it.
+#[cold]
+#[inline(never)]
+fn traverse_general<'a, T>(
+    chunks: &'a [Vec<Slot<T>>],
+    state: &mut TraverseState,
+) -> Option<(NodeEdge, Option<&'a T>)> {
+    traverse_next(chunks, state.root, &mut state.next).map(|(edge, slot)| (edge, slot.data()))
 }
 
 /// A traversal that [`Arena::traverse_step`] takes one edge at a time: the
