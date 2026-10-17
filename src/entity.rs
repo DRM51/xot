@@ -219,6 +219,10 @@ fn parse_content_with_changes(
     if !change {
         Ok(content)
     } else {
+        // the room for the content that a reference or a line end did not
+        // take: the parser keeps the string in the tree, which held a copy
+        // of the length of the value before
+        result.shrink_to_fit();
         Ok(result.into())
     }
 }
@@ -562,6 +566,27 @@ mod tests {
             prop_assert_eq!(&fast, &before);
             prop_assert_eq!(&slow, &before);
         }
+    }
+
+    #[test]
+    fn parse_content_gives_a_changed_value_no_more_room_than_it_takes() {
+        for content in [
+            "a &amp; b",
+            "&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;",
+            "a\r\nb\rc",
+            "&#x1F600;",
+        ] {
+            for attribute in [false, true] {
+                let Ok(Cow::Owned(value)) = parse_content(content.into(), attribute, 0) else {
+                    panic!("{:?} changes", content);
+                };
+                assert_eq!(value.capacity(), value.len(), "{:?}", content);
+            }
+        }
+        let Ok(Cow::Owned(value)) = parse_attribute("one\u{9}two".into(), 0) else {
+            panic!("a tab changes an attribute value");
+        };
+        assert_eq!(value.capacity(), value.len());
     }
 
     #[test]

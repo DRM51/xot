@@ -365,10 +365,11 @@
   new `String` for each element. An end tag with the prefix and the local
   name of its start tag is not looked up at all. Text and attribute values
   without a reference, a carriage return or, in attribute values, a tab or
-  a newline are copied as they are instead of character by character. The
-  room for the attributes and the namespace declarations of an element is
-  kept from one element to the next. Names, prefixes and namespaces get
-  their ids in the same order as before, also when parsing fails. On a
+  a newline are copied as they are instead of character by character, and
+  those with one keep a string of their length, as before. The room for the
+  attributes and the namespace declarations of an element is kept from one
+  element to the next. Names, prefixes and namespaces get their ids in the
+  same order as before, also when parsing fails. On a
   generated document of 25 megabytes with 2.0M nodes, parsing makes
   1,000,225 allocations instead of 6,500,920 and 21 reallocations instead of
   499,916, keeps the same heap, and takes 0.45 times as long (136 ms against

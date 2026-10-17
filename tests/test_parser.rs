@@ -1243,3 +1243,25 @@ fn test_parse_finds_names_made_before() {
         xot.to_string(second).unwrap()
     );
 }
+
+#[test]
+fn test_parse_keeps_changed_values_in_strings_of_their_length() {
+    // a text or an attribute value that a reference or a line end changes
+    // is kept in a string of its length, as one without them is
+    let mut xot = Xot::new();
+    let root = xot
+        .parse("<a b=\"x &lt; y &amp; z\" c=\"one\u{9}two\">p &amp; q\r\nr</a>")
+        .unwrap();
+    let a = xot.document_element(root).unwrap();
+    let b = xot.add_name("b");
+    let c = xot.add_name("c");
+    for (name, expected) in [(b, "x < y & z"), (c, "one two")] {
+        let value = xot.attributes(a).get(name).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(value.capacity(), value.len());
+    }
+    let text = xot.first_child(a).unwrap();
+    let text = xot.text_mut(text).unwrap().get_mut();
+    assert_eq!(text.as_str(), "p & q\nr");
+    assert_eq!(text.capacity(), text.len());
+}
