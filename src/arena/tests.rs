@@ -481,18 +481,32 @@ fn a_clone_keeps_the_room_of_each_chunk() {
 #[test]
 fn sizes() {
     use std::mem::size_of;
-    // the sizes with current compilers: a free slot takes one of the values
-    // that the tag of `Value` does not use
-    assert_eq!(size_of::<Value>(), 40);
-    assert_eq!(size_of::<SlotData<Value>>(), 40);
-    assert_eq!(size_of::<Slot<Value>>(), 64);
-    assert_eq!(size_of::<FreeSlot>(), 24);
+    // the node ids and edges, on every target
     assert_eq!(size_of::<NodeId>(), 8);
     assert_eq!(size_of::<Option<NodeId>>(), 8);
     assert_eq!(size_of::<crate::Node>(), 8);
     assert_eq!(size_of::<Option<crate::Node>>(), 8);
     assert_eq!(size_of::<crate::NodeEdge>(), 12);
     assert_eq!(size_of::<NodeEdge>(), 12);
+    assert_eq!(size_of::<FreeSlot>(), 24);
+    println!(
+        "Value {} bytes, SlotData<Value> {}, Slot<Value> {}",
+        size_of::<Value>(),
+        size_of::<SlotData<Value>>(),
+        size_of::<Slot<Value>>()
+    );
+}
+
+/// The sizes with current compilers on 64-bit targets, which the language
+/// does not promise: a free slot takes one of the values that the tag of
+/// `Value` does not use, so that a slot is its value and 24 bytes.
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn sizes_on_64_bit_targets() {
+    use std::mem::size_of;
+    assert_eq!(size_of::<Value>(), 40);
+    assert_eq!(size_of::<SlotData<Value>>(), 40);
+    assert_eq!(size_of::<Slot<Value>>(), 64);
 }
 
 #[test]
