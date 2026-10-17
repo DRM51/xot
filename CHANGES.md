@@ -443,12 +443,17 @@
   new `String` for each element. An end tag with the prefix and the local
   name of its start tag is not looked up at all. Text and attribute values
   without a reference, a carriage return or, in attribute values, a tab or
-  a newline are copied as they are instead of character by character, and
-  those with one keep a string of their length, as before. The room for the
-  attributes and the namespace declarations of an element is kept from one
-  element to the next. Names, prefixes and namespaces get their ids in the
-  same order as before, also when parsing fails. On a
-  generated document of 25 megabytes with 2.0M nodes, parsing makes
+  a newline are copied as they are instead of character by character; those
+  with one are built in a string that the parser keeps from one to the next,
+  where they grew a new string each, and the tree gets a copy of their
+  length, as before. A text of 100,000 elements with escaped markup in each
+  takes 21.95 MiB of the memory of the allocator after parsing, as much as
+  the same text without references does, and parsing it makes 17
+  reallocations instead of 300,017. The room for the attributes and the namespace
+  declarations of an element is kept from one element to the next. Names,
+  prefixes and namespaces get their ids in the same order as before, also
+  when parsing fails. On a generated document of 25 megabytes with 2.0M
+  nodes, parsing makes
   1,000,225 allocations instead of 6,500,920 and 21 reallocations instead of
   499,916, keeps the same heap, and takes 0.45 times as long (136 ms against
   301 ms in the same runs); `Xot::parse_with_span_info` takes 0.66 times as

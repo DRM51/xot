@@ -5,7 +5,7 @@ use xmlparser::{ElementEnd, StrSpan, Stream, TextPos, Token, Tokenizer};
 
 use crate::arena::NodeId;
 use crate::encoding::decode;
-use crate::entity::{normalize_line_ends, parse_attribute, parse_text};
+use crate::entity::{normalize_line_ends, parse_attribute_in, parse_text_in};
 use crate::error::ParseError;
 use crate::id::{Name, NameId, PrefixId};
 use crate::xmlvalue::{Attribute, Comment, Element, Namespace, ProcessingInstruction, Text, Value};
@@ -58,6 +58,10 @@ struct DocumentBuilder<'a> {
     seen_ids: HashSet<String>,
     id_nodes: HashMap<String, NodeId>,
     xml_id_id: NameId,
+    /// The buffer in which a text or an attribute value that its references
+    /// or line ends change is built, kept from one to the next; the tree
+    /// gets a copy of the length of the value.
+    buffer: String,
 }
 
 impl<'a> DocumentBuilder<'a> {
@@ -74,6 +78,7 @@ impl<'a> DocumentBuilder<'a> {
             seen_ids: HashSet::new(),
             id_nodes: HashMap::new(),
             xml_id_id: xot.xml_id_id,
+            buffer: String::new(),
         }
     }
 
@@ -101,7 +106,8 @@ impl<'a> DocumentBuilder<'a> {
         // the namespace name is the normalized value of the namespace
         // declaration attribute, with its references expanded like in any
         // other attribute value (https://www.w3.org/TR/xml-names/#ns-decl)
-        let namespace_uri = parse_attribute(value.as_str().into(), value.start())?;
+        let namespace_uri =
+            parse_attribute_in(value.as_str().into(), value.start(), &mut self.buffer)?;
         let prefix_id = self.name_id_builder.prefix_id(declared, xot);
         // like any attribute, a declaration can be on an element only once
         if self
@@ -144,7 +150,7 @@ impl<'a> DocumentBuilder<'a> {
             ));
         }
         let value_span = value.into();
-        let value = parse_attribute(value.as_str().into(), value.start())?;
+        let value = parse_attribute_in(value.as_str().into(), value.start(), &mut self.buffer)?;
         // if this is an xml:id we want to apply xml:id normalization as described here
         // https://www.w3.org/TR/xml-id/#id-avn
         let value = if name.as_str() == "id" && prefix.as_str() == "xml" {
@@ -261,7 +267,7 @@ impl<'a> DocumentBuilder<'a> {
     }
 
     fn text(&mut self, content: StrSpan<'a>, xot: &mut Xot) -> Result<NodeId, ParseError> {
-        let content = parse_text(content.as_str().into(), content.start())?;
+        let content = parse_text_in(content.as_str().into(), content.start(), &mut self.buffer)?;
         if let Some(last) = self.consolidate_text(&content, xot) {
             return Ok(last);
         }

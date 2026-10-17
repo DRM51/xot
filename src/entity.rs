@@ -64,8 +64,21 @@ fn push_char_ref(result: &mut String, c: char) {
     let _ = write!(result, "&#x{:X};", u32::from(c));
 }
 
+/// [`parse_text_in`] with a buffer of its own.
+#[cfg(test)]
 pub(crate) fn parse_text(content: Cow<str>, base_position: usize) -> Result<Cow<str>, ParseError> {
-    parse_content(content, false, base_position)
+    parse_text_in(content, base_position, &mut String::new())
+}
+
+/// The content of a text, with its references expanded and its line ends
+/// normalized (see [`parse_content`]). A text that changes is built in
+/// `buffer`, which the caller keeps from one text to the next.
+pub(crate) fn parse_text_in<'a>(
+    content: Cow<'a, str>,
+    base_position: usize,
+    buffer: &mut String,
+) -> Result<Cow<'a, str>, ParseError> {
+    parse_content(content, false, base_position, buffer)
 }
 
 /// Normalize line ends in content without references, such as a CDATA
@@ -80,11 +93,25 @@ pub(crate) fn normalize_line_ends(content: &str) -> Cow<'_, str> {
     }
 }
 
+/// [`parse_attribute_in`] with a buffer of its own.
+#[cfg(test)]
 pub(crate) fn parse_attribute(
     content: Cow<str>,
     base_position: usize,
 ) -> Result<Cow<str>, ParseError> {
-    parse_content(content, true, base_position)
+    parse_attribute_in(content, base_position, &mut String::new())
+}
+
+/// The value of an attribute, with its references expanded and its line
+/// ends and white space normalized (see [`parse_content`]). A value that
+/// changes is built in `buffer`, which the caller keeps from one value to the
+/// next.
+pub(crate) fn parse_attribute_in<'a>(
+    content: Cow<'a, str>,
+    base_position: usize,
+    buffer: &mut String,
+) -> Result<Cow<'a, str>, ParseError> {
+    parse_content(content, true, base_position, buffer)
 }
 
 /// `content` with its references expanded and its line ends normalized, and
@@ -96,12 +123,14 @@ pub(crate) fn parse_attribute(
 /// Only a reference (`&`), a carriage return, and in an attribute value a tab
 /// or a newline, change the content, or make it an error, so without them
 /// it is returned as it is, without going through it character by
-/// character as [`parse_content_with_changes`] does.
-fn parse_content(
-    content: Cow<str>,
+/// character as [`parse_content_with_changes`] does, which builds the value
+/// in `buffer`.
+fn parse_content<'a>(
+    content: Cow<'a, str>,
     attribute: bool,
     base_position: usize,
-) -> Result<Cow<str>, ParseError> {
+    buffer: &mut String,
+) -> Result<Cow<'a, str>, ParseError> {
     // these characters are ASCII, and no byte of another character in
     // UTF-8 is, so the bytes tell
     let changes = if attribute {
@@ -114,21 +143,23 @@ fn parse_content(
     if !changes {
         return Ok(content);
     }
-    parse_content_with_changes(content, attribute, base_position)
+    parse_content_with_changes(content, attribute, base_position, buffer)
 }
 
 /// [`parse_content`] for content that may change: it goes through the
-/// content character by character. It returns `content` itself if nothing
-/// changes after all.
-fn parse_content_with_changes(
-    content: Cow<str>,
+/// content character by character, and builds the value in `buffer`, of
+/// which it returns a copy of the length of the value. It returns `content`
+/// itself if nothing changes after all.
+fn parse_content_with_changes<'a>(
+    content: Cow<'a, str>,
     attribute: bool,
     base_position: usize,
-) -> Result<Cow<str>, ParseError> {
-    // the result is never longer than the content: a reference is longer
-    // than the character it stands for, and a carriage return, a carriage
-    // return and a newline, a tab or a newline become a single byte
-    let mut result = String::with_capacity(content.len());
+    buffer: &mut String,
+) -> Result<Cow<'a, str>, ParseError> {
+    // the buffer grows to the longest value, and keeps its room for the
+    // values after it
+    let result = buffer;
+    result.clear();
     let mut chars = content.char_indices().peekable();
     let mut change = false;
     while let Some((position, c)) = chars.next() {
@@ -219,11 +250,11 @@ fn parse_content_with_changes(
     if !change {
         Ok(content)
     } else {
-        // the room for the content that a reference or a line end did not
-        // take: the parser keeps the string in the tree, which held a copy
-        // of the length of the value before
-        result.shrink_to_fit();
-        Ok(result.into())
+        // the tree keeps the string, which takes no more room than the
+        // value then: a string that gave back the room a reference or a line
+        // end did not take, through `shrink_to_fit`, could keep all of the
+        // memory that the allocator gave it for the length of the content
+        Ok(Cow::Owned(result.as_str().to_owned()))
     }
 }
 
@@ -547,7 +578,9 @@ mod tests {
             attribute in any::<bool>(),
             base_position in 0usize..1000,
         ) {
-            let fast = parse_content(content.as_str().into(), attribute, base_position);
+            // a buffer with something in it already, as the parser keeps it
+            let mut buffer = String::from("left over &amp;");
+            let fast = parse_content(content.as_str().into(), attribute, base_position, &mut buffer);
             // a borrowed result is the content itself
             if let Ok(Cow::Borrowed(s)) = &fast {
                 prop_assert!(std::ptr::eq(*s, content.as_str()));
@@ -557,6 +590,7 @@ mod tests {
                 content.as_str().into(),
                 attribute,
                 base_position,
+                &mut buffer,
             ));
             let before = described(parse_content_before(
                 content.as_str().into(),
@@ -570,6 +604,11 @@ mod tests {
 
     #[test]
     fn parse_content_gives_a_changed_value_no_more_room_than_it_takes() {
+        // a copy of the value, made for its length, and not the buffer, which
+        // the parser keeps from one value to the next: the memory that the
+        // allocator gives a string does not shrink with `shrink_to_fit` when
+        // the string keeps more than about half of it
+        let mut buffer = String::with_capacity(100);
         for content in [
             "a &amp; b",
             "&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;",
@@ -577,10 +616,14 @@ mod tests {
             "&#x1F600;",
         ] {
             for attribute in [false, true] {
-                let Ok(Cow::Owned(value)) = parse_content(content.into(), attribute, 0) else {
+                let Ok(Cow::Owned(value)) =
+                    parse_content(content.into(), attribute, 0, &mut buffer)
+                else {
                     panic!("{:?} changes", content);
                 };
                 assert_eq!(value.capacity(), value.len(), "{:?}", content);
+                assert_eq!(value, buffer);
+                assert_ne!(value.as_ptr(), buffer.as_ptr());
             }
         }
         let Ok(Cow::Owned(value)) = parse_attribute("one\u{9}two".into(), 0) else {
