@@ -760,6 +760,176 @@ fn get_pair_mut_gives_the_data_of_two_slots() {
     }
 }
 
+/// `find_child` of `node` gives the children and the data that
+/// `children_data` gives, and ends at the child for which `visit` gives a
+/// result: at each child in turn if `each`, else at one picked by `rng`. The
+/// children, as slot positions plus one.
+fn check_find_child(arena: &Arena<u32>, node: NodeId, rng: &mut Rng, each: bool) -> Vec<u32> {
+    let expected: Vec<((u32, u32), u32)> = arena
+        .children_data(node)
+        .map(|(child, data)| (my_key(child), *live(data)))
+        .collect();
+    let mut visited = Vec::new();
+    let found: Option<()> = arena.find_child(node, |child, data| {
+        visited.push((my_key(child), *data));
+        None
+    });
+    assert_eq!(found, None);
+    assert_eq!(visited, expected);
+    let ends = if each || expected.is_empty() {
+        0..expected.len()
+    } else {
+        let end = rng.below(expected.len());
+        end..end + 1
+    };
+    for end in ends {
+        let mut steps = 0;
+        let found = arena.find_child(node, |child, _| {
+            steps += 1;
+            (steps > end).then_some(my_key(child))
+        });
+        assert_eq!(found, Some(expected[end].0));
+        assert_eq!(steps, end + 1);
+    }
+    expected.iter().map(|((index1, _), _)| *index1).collect()
+}
+
+#[test]
+fn find_child_visits_the_children_that_children_data_gives() {
+    // random trees with nodes appended, prepended and put next to others, and
+    // removed between, so that new nodes take free slots and the children of
+    // a node are not in the order of their slots; and runs of nodes made one
+    // after another for one parent, which are mostly in slots one after
+    // another, in order or (prepended) in reverse
+    let mut rng = Rng::new(13);
+    let (mut runs, mut steps_to_the_next_slot) = (0, 0);
+    for _ in 0..100 {
+        let mut arena = Arena::new();
+        let mut made = vec![arena.new_node(0)];
+        let mut alive = made.clone();
+        let mut value = 1;
+        while value < 200u32 {
+            if alive.len() > 1 && rng.chance(15) {
+                // any node but the root, which is the first
+                let node = alive[1 + rng.below(alive.len() - 1)];
+                if rng.chance(50) {
+                    arena.remove(node);
+                } else {
+                    arena.remove_subtree(node);
+                }
+                alive.retain(|&node| !arena.is_removed(node));
+                continue;
+            }
+            let parent = alive[rng.below(alive.len())];
+            let (kind, count) = (rng.below(3), if rng.chance(25) { 8 } else { 1 });
+            let mut previous = None;
+            for _ in 0..count {
+                let node = arena.new_node(value);
+                value += 1;
+                let children: Vec<NodeId> = arena.children(parent).collect();
+                match (kind, children.first(), previous) {
+                    (0, Some(_), _) => arena.checked_prepend(parent, node).unwrap(),
+                    // in a run, after the node made before
+                    (1, _, Some(previous)) => arena.checked_insert_after(previous, node).unwrap(),
+                    (1, Some(_), None) => {
+                        let sibling = children[rng.below(children.len())];
+                        arena.checked_insert_after(sibling, node).unwrap();
+                    }
+                    _ => arena.checked_append(parent, node).unwrap(),
+                }
+                previous = Some(node);
+                made.push(node);
+                alive.push(node);
+            }
+            runs += usize::from(count > 1);
+        }
+        // every handle whose slot holds a node: those of live nodes, and
+        // those of removed nodes whose slot a later node took
+        for &node in &made {
+            if arena.is_removed(node) {
+                continue;
+            }
+            let children = check_find_child(&arena, node, &mut rng, false);
+            steps_to_the_next_slot += children.windows(2).filter(|w| w[1] == w[0] + 1).count();
+        }
+    }
+    assert!(runs > 500, "{runs}");
+    assert!(steps_to_the_next_slot > 5000, "{steps_to_the_next_slot}");
+}
+
+#[test]
+fn find_child_follows_children_across_the_end_of_a_chunk() {
+    let mut rng = Rng::new(17);
+    // an arena with `parents` parents and other nodes up to 50 slots before
+    // the end of the first chunk
+    let near_the_end = |parents: u32| {
+        let mut arena = Arena::new();
+        let parents: Vec<NodeId> = (0..parents).map(|value| arena.new_node(value)).collect();
+        while (arena.len as usize) < CHUNK_LEN - 50 {
+            arena.new_node(0);
+        }
+        (arena, parents)
+    };
+    let crosses = |children: &[u32]| {
+        children.iter().any(|&index1| index1 as usize <= CHUNK_LEN)
+            && children.iter().any(|&index1| index1 as usize > CHUNK_LEN)
+    };
+    // children in slots one after another, in order
+    let (mut arena, parents) = near_the_end(1);
+    tree(&mut arena, parents[0], &(1..=100).collect::<Vec<_>>());
+    let children = check_find_child(&arena, parents[0], &mut rng, true);
+    assert!(crosses(&children));
+    assert!(children.windows(2).all(|w| w[1] == w[0] + 1));
+    // in reverse
+    let (mut arena, parents) = near_the_end(1);
+    for value in 1..=100 {
+        let child = arena.new_node(value);
+        arena.checked_prepend(parents[0], child).unwrap();
+    }
+    let children = check_find_child(&arena, parents[0], &mut rng, true);
+    assert!(crosses(&children));
+    assert!(children.windows(2).all(|w| w[0] == w[1] + 1));
+    // in every other slot: two parents get children in turn
+    let (mut arena, parents) = near_the_end(2);
+    for value in 1..=100 {
+        tree(&mut arena, parents[value as usize % 2], &[value]);
+    }
+    for &parent in &parents {
+        let children = check_find_child(&arena, parent, &mut rng, true);
+        assert!(crosses(&children));
+        assert!(children.windows(2).all(|w| w[1] == w[0] + 2));
+    }
+    // a parent in the second chunk with children in both, some in slots
+    // taken again, with the next generation, and its last child in the slot
+    // before its first
+    let (mut arena, _) = near_the_end(0);
+    let children = (1..=100)
+        .map(|value| arena.new_node(value))
+        .collect::<Vec<_>>();
+    let parent = arena.new_node(0);
+    assert!(parent.index1.get() as usize > CHUNK_LEN);
+    for &child in &children {
+        arena.checked_append(parent, child).unwrap();
+    }
+    for &child in &children[45..55] {
+        arena.remove(child);
+    }
+    let again: Vec<NodeId> = (0..10).map(|value| arena.new_node(value)).collect();
+    for &child in &again {
+        arena.checked_insert_after(children[44], child).unwrap();
+    }
+    let last = arena.new_node(7);
+    arena.checked_append(parent, last).unwrap();
+    let first = arena.new_node(8);
+    arena.checked_prepend(parent, first).unwrap();
+    let children = check_find_child(&arena, parent, &mut rng, true);
+    assert!(crosses(&children));
+    assert_eq!(children.len(), 102);
+    assert_eq!(arena.get(again[0]), &0);
+    assert_eq!(again[0].generation, 1);
+    assert_eq!(first.index1.get(), last.index1.get() + 1);
+}
+
 // ---------------------------------------------------------------- the oracle
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

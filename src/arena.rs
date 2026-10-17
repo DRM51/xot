@@ -1231,6 +1231,67 @@ impl<T> Arena<T> {
         }
     }
 
+    /// The children of `node_id`, first to last, each with its data, given to
+    /// `visit` until it returns `Some`, which is then the result; `None` if
+    /// it returns `None` for each child.
+    ///
+    /// The slot of `node_id` holds a node that is not removed, which a debug
+    /// assertion checks. Its children are then the ones that
+    /// [`Arena::children_data`] gives, up to its last child, and none of them
+    /// is removed: a removed one would panic as [`Arena::get`] does. A step
+    /// reads one slot.
+    ///
+    /// Children made one after another are mostly in slots one after
+    /// another. Where the next sibling of a child is in the slot after the
+    /// slot of the child, in the same chunk, the step takes that slot as the
+    /// next one in the chunk, and the next sibling in the fields of the child
+    /// only confirms it: the read of a slot does not wait for the fields of
+    /// the slot before.
+    #[inline(always)]
+    pub(crate) fn find_child<R>(
+        &self,
+        node_id: NodeId,
+        mut visit: impl FnMut(NodeId, &T) -> Option<R>,
+    ) -> Option<R> {
+        // the children are mostly in the chunk of the parent
+        let mut cursor = Cursor::new(&self.chunks);
+        let parent = cursor.slot(node_id.index1.get());
+        debug_assert!(!parent.is_free(), "the parent is removed");
+        let (mut next, last) = (parent.link[FIRST], parent.link[LAST]);
+        while let Some(mut index1) = NonZeroU32::new(next) {
+            let (chunk, place) = cursor.chunk(index1.get());
+            let mut slot = &chunk[place];
+            // the slots after it in its chunk, in order
+            let mut after = chunk[place + 1..].iter();
+            loop {
+                let SlotData::Live(data) = &slot.data else {
+                    unreachable!("Try to access a freed node")
+                };
+                let child = NodeId {
+                    index1,
+                    generation: slot.generation,
+                };
+                if let Some(result) = visit(child, data) {
+                    return Some(result);
+                }
+                // the last child, where `children_data` stops
+                if index1.get() == last {
+                    return None;
+                }
+                next = slot.link[NEXT];
+                match (after.next(), index1.checked_add(1)) {
+                    // the next sibling is in the next slot of the chunk
+                    (Some(next_slot), Some(next_index1)) if next_index1.get() == next => {
+                        slot = next_slot;
+                        index1 = next_index1;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        None
+    }
+
     /// The node and its descendants, in document order.
     pub(crate) fn descendants(&self, node_id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         Descendants {
@@ -1389,6 +1450,19 @@ impl<'a, T> Cursor<'a, T> {
             self.chunk_index = chunk_index;
         }
         &self.chunk[(position & CHUNK_MASK) as usize]
+    }
+
+    /// The chunk of the slot at the position `index1 - 1`, and the position
+    /// of the slot in it; `index1` is not 0.
+    #[inline(always)]
+    fn chunk(&mut self, index1: u32) -> (&'a [Slot<T>], usize) {
+        let position = index1 - 1;
+        let chunk_index = position >> CHUNK_BITS;
+        if chunk_index != self.chunk_index {
+            self.chunk = &self.chunks[chunk_index as usize];
+            self.chunk_index = chunk_index;
+        }
+        (self.chunk, (position & CHUNK_MASK) as usize)
     }
 }
 

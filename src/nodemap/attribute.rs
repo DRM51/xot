@@ -1,7 +1,7 @@
 use crate::xmlvalue::{Attribute, Value, ValueCategory};
 use crate::{NameId, Node, Xot};
 
-use super::core::{MutableNodeMap, NodeMap, ValueAdapter};
+use super::core::{key_bit, MutableNodeMap, NodeMap, ValueAdapter};
 
 pub struct AttributeAdapter {}
 
@@ -18,22 +18,36 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
             .take_while(|(_, value)| value.value_category() == ValueCategory::Attribute)
     }
 
+    // the map is the attribute nodes after the namespace nodes at the start
+    // of the children; a new one goes after the last of them, if there is
+    // none after the last namespace node, and if there is none of these
+    // either, first
     #[inline]
-    fn insertion_point(xot: &Xot, node: Node) -> Option<Node> {
-        let last_child = Self::children(xot, node).last();
-        // if there is a last child, insert after it
-        if let Some(last_child) = last_child {
-            return Some(last_child);
+    fn find_or_end(
+        xot: &Xot,
+        node: Node,
+        mut found: impl FnMut(&Value) -> bool,
+    ) -> Result<Node, Option<Node>> {
+        let mut last = None;
+        let mut attributes = false;
+        let found = xot.arena.find_child(node.get(), |child, value| {
+            match value {
+                Value::Namespace(_) if !attributes => {}
+                Value::Attribute(_) => {
+                    attributes = true;
+                    if found(value) {
+                        return Some(Some(child));
+                    }
+                }
+                _ => return Some(None),
+            }
+            last = Some(child);
+            None
+        });
+        match found.flatten() {
+            Some(child) => Ok(Node::new(child)),
+            None => Err(last.map(Node::new)),
         }
-        // if there is no last child, then insert after the last namespace node
-        let namespaces = xot
-            .all_children_values(node)
-            .take_while(|(_, value)| value.value_category() == ValueCategory::Namespace);
-        if let Some((last_namespace, _)) = namespaces.last() {
-            return Some(last_namespace);
-        }
-        // if there is no namespace node, we want to prepend
-        None
     }
 
     #[inline]
@@ -42,6 +56,11 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
             Value::Attribute(Attribute { name_id, .. }) => *name_id,
             _ => unreachable!(),
         }
+    }
+
+    #[inline]
+    fn key_bit(key: NameId) -> u64 {
+        key_bit(key.0)
     }
 
     #[inline]

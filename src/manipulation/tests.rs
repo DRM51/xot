@@ -26,7 +26,7 @@ use crate::{NameId, NamespaceId, Node, NodeEdge, PrefixId, Value, ValueType, Xot
 
 /// Run `f`; `Err` holds the message of its panic. (The test harness keeps
 /// what the panic prints, unless the test fails.)
-fn catch<R>(f: impl FnOnce() -> R) -> Result<R, String> {
+pub(crate) fn catch<R>(f: impl FnOnce() -> R) -> Result<R, String> {
     panic::catch_unwind(AssertUnwindSafe(f)).map_err(|cause| {
         cause
             .downcast_ref::<String>()
@@ -37,10 +37,10 @@ fn catch<R>(f: impl FnOnce() -> R) -> Result<R, String> {
 }
 
 /// A seeded xorshift64* generator.
-struct Rng(u64);
+pub(crate) struct Rng(u64);
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
     }
 
@@ -51,15 +51,15 @@ impl Rng {
         self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
-    fn below(&mut self, n: usize) -> usize {
+    pub(crate) fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
 
-    fn chance(&mut self, in_hundred: u64) -> bool {
+    pub(crate) fn chance(&mut self, in_hundred: u64) -> bool {
         self.next() % 100 < in_hundred
     }
 
-    fn pick<T: Copy>(&mut self, items: &[T]) -> Option<T> {
+    pub(crate) fn pick<T: Copy>(&mut self, items: &[T]) -> Option<T> {
         if items.is_empty() {
             None
         } else {
@@ -69,7 +69,7 @@ impl Rng {
 }
 
 /// The first difference between the slots of two `Xot`s, if any.
-fn slot_difference(a: &Xot, b: &Xot) -> Option<String> {
+pub(crate) fn slot_difference(a: &Xot, b: &Xot) -> Option<String> {
     a.arena.slot_difference(&b.arena)
 }
 
@@ -209,14 +209,14 @@ const TEXTS: &[&str] = &["", "a", "bc", " ", "def\n"];
 /// A `Xot` with a few trees, made by random edits, and the nodes they
 /// made: those that are not removed, and those that are, some with their
 /// slot taken again.
-struct Trees {
-    xot: Xot,
-    live: Vec<Node>,
-    removed: Vec<Node>,
+pub(crate) struct Trees {
+    pub(crate) xot: Xot,
+    pub(crate) live: Vec<Node>,
+    pub(crate) removed: Vec<Node>,
 }
 
 impl Trees {
-    fn new(seed: u64, edits: usize) -> Self {
+    pub(crate) fn new(seed: u64, edits: usize) -> Self {
         let mut rng = Rng::new(seed);
         let mut xot = Xot::new();
         let document = xot.parse(DOCUMENTS[rng.below(DOCUMENTS.len())]).unwrap();
@@ -244,7 +244,7 @@ impl Trees {
         trees
     }
 
-    fn names(xot: &mut Xot) -> (Vec<NameId>, Vec<PrefixId>, Vec<NamespaceId>) {
+    pub(crate) fn names(xot: &mut Xot) -> (Vec<NameId>, Vec<PrefixId>, Vec<NamespaceId>) {
         let p = xot.add_namespace("urn:p");
         let q = xot.add_namespace("urn:q");
         let names = vec![
@@ -462,7 +462,7 @@ impl Trees {
     /// A node to give to the code under test: mostly one that is not
     /// removed, often an element or a document, sometimes a removed one,
     /// whose slot may be taken again.
-    fn node(&self, rng: &mut Rng) -> Node {
+    pub(crate) fn node(&self, rng: &mut Rng) -> Node {
         if !self.removed.is_empty() && rng.chance(10) {
             return rng.pick(&self.removed).unwrap();
         }

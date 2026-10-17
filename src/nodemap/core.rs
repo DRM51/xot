@@ -2,6 +2,7 @@
 
 use ahash::AHashMap;
 
+use crate::arena::NodeId;
 use crate::{Node, Value, Xot};
 
 use super::entry::{Entry, OccupiedEntry, VacantEntry};
@@ -14,14 +15,31 @@ pub trait ValueAdapter<K, V> {
     fn children(xot: &Xot, parent: Node) -> impl Iterator<Item = Node> + '_ {
         Self::entries(xot, parent).map(|(node, _)| node)
     }
-    // new node insertion point is either node whether it should be inserted after,
-    // or if None, prepend in the beginning
-    fn insertion_point(xot: &Xot, parent: Node) -> Option<Node>;
+    // in one pass over the children of `parent`, an element that is not
+    // removed (see `MutableNodeMap::attach`): the first node of the map whose
+    // value `found` accepts, `found` getting the values in order; otherwise
+    // the insertion point of a new node of the map, the node it goes after,
+    // or `None` if it goes first among the children
+    fn find_or_end(
+        xot: &Xot,
+        parent: Node,
+        found: impl FnMut(&Value) -> bool,
+    ) -> Result<Node, Option<Node>>;
     fn key(value: &Value) -> K;
+    // the bit of a key in a filter of 64 bits (see `key_bit`)
+    fn key_bit(key: K) -> u64;
     fn value(value: &Value) -> &V;
     fn value_mut(value: &mut Value) -> &mut V;
     fn create(key: K, value: V) -> Value;
     fn update(value: &mut Value, value: V) -> Option<V>;
+}
+
+/// The bit of a prefix or name id in a filter of 64 bits. A filter with the
+/// bits of a set of keys may have the bit of a key that is not in the set,
+/// but a key whose bit it does not have is not in the set.
+#[inline]
+pub(crate) fn key_bit(id: u16) -> u64 {
+    1 << (id % 64)
 }
 
 /// A `NodeMap` is a struct with a hash-map like API and is used to
@@ -295,28 +313,16 @@ where
     /// See also [`entry`](#method.entry) if you you want to insert *or* modify or if you need to
     /// get the index of the corresponding key-value pair.
     pub fn insert(&mut self, key: impl Into<K> + Copy, value: V) -> Option<V> {
-        let node = self.get_node(key);
-        if let Some(node) = node {
+        let key = key.into();
+        match A::find_or_end(self.xot, self.parent, |value| A::key(value) == key) {
             // if we already have a node
-            let node_value = self.xot.value_mut(node);
-            A::update(node_value, value)
-        } else {
+            Ok(node) => A::update(self.xot.value_mut(node), value),
             // we need to insert a new node
-            let new_value = A::create(key.into(), value);
-            let node = self.xot.arena.new_node(new_value);
-            let insertion_point = A::insertion_point(self.xot, self.parent);
-            if let Some(insertion_point) = insertion_point {
-                self.xot
-                    .arena
-                    .checked_insert_after(insertion_point.get(), node)
-                    .unwrap();
-            } else {
-                self.xot
-                    .arena
-                    .checked_prepend(self.parent.get(), node)
-                    .unwrap();
+            Err(insertion_point) => {
+                let node = self.xot.arena.new_node(A::create(key, value));
+                self.attach(insertion_point, node);
+                None
             }
-            None
         }
     }
 
@@ -335,28 +341,43 @@ where
             panic!("Tried to insert unexpected node value into the node map");
         }
         let key = A::key(node_value);
-        let value = A::value(node_value).clone();
 
-        let existing_node = self.get_node(key);
-        if let Some(existing_node) = existing_node {
-            // if we already have a node
-            let node_value = self.xot.value_mut(existing_node);
-            A::update(node_value, value);
-            existing_node
-        } else {
-            let insertion_point = A::insertion_point(self.xot, self.parent);
-            if let Some(insertion_point) = insertion_point {
-                self.xot
-                    .arena
-                    .checked_insert_after(insertion_point.get(), node.get())
-                    .unwrap();
-            } else {
-                self.xot
-                    .arena
-                    .checked_prepend(self.parent.get(), node.get())
-                    .unwrap();
+        match A::find_or_end(self.xot, self.parent, |value| A::key(value) == key) {
+            // if we already have a node, it gets the value of `node`
+            Ok(existing_node) => {
+                let value = A::value(self.xot.value(node)).clone();
+                A::update(self.xot.value_mut(existing_node), value);
+                existing_node
             }
-            node
+            Err(insertion_point) => {
+                self.attach(insertion_point, node.get());
+                node
+            }
+        }
+    }
+
+    /// Put `node`, which has a key that the map does not have, at the
+    /// insertion point that [`ValueAdapter::find_or_end`] gave: after
+    /// `insertion_point`, or first among the children if it is `None`.
+    ///
+    /// The slot of the parent holds an element, which is not removed:
+    /// [`Xot::namespaces_mut`] and [`Xot::attributes_mut`] check that it is
+    /// an element, which reads its value and panics for a removed node, and
+    /// the map removes no node but those of the map. So its children are not
+    /// removed either, and `Arena::new_node`, which takes a free slot, changes
+    /// none of the nodes that `find_or_end` read: the insertion point it gave
+    /// before a new node was made is the one it gives after.
+    fn attach(&mut self, insertion_point: Option<Node>, node: NodeId) {
+        if let Some(insertion_point) = insertion_point {
+            self.xot
+                .arena
+                .checked_insert_after(insertion_point.get(), node)
+                .unwrap();
+        } else {
+            self.xot
+                .arena
+                .checked_prepend(self.parent.get(), node)
+                .unwrap();
         }
     }
 
@@ -380,6 +401,72 @@ where
         match self.get(key) {
             Some(_value) => Entry::Occupied(OccupiedEntry::new(self, key.into())),
             None => Entry::Vacant(VacantEntry::new(self, key.into())),
+        }
+    }
+}
+
+impl<K, V, A: ValueAdapter<K, V>> Extend<(K, V)> for MutableNodeMap<'_, K, V, A>
+where
+    K: PartialEq + Eq + Clone + Copy + std::hash::Hash,
+    V: Clone,
+{
+    /// Insert the key-value pairs in order, as
+    /// [`insert`](MutableNodeMap::insert) does each in turn: a key that the
+    /// map already has, or that an earlier pair gave, keeps its place in the
+    /// order and gets the new value; any other key is inserted last.
+    ///
+    /// ```rust
+    /// use xot::Xot;
+    ///
+    /// let mut xot = Xot::new();
+    /// let root = xot.parse(r#"<doc xmlns:a="urn:a"/>"#)?;
+    /// let doc_el = xot.document_element(root)?;
+    /// let (a, b, c) = (xot.add_prefix("a"), xot.add_prefix("b"), xot.add_prefix("c"));
+    /// let (one, two, three) = (
+    ///     xot.add_namespace("urn:1"),
+    ///     xot.add_namespace("urn:2"),
+    ///     xot.add_namespace("urn:3"),
+    /// );
+    /// xot.namespaces_mut(doc_el)
+    ///     .extend([(b, one), (a, two), (c, three), (b, two)]);
+    /// assert_eq!(
+    ///     xot.to_string(root)?,
+    ///     r#"<doc xmlns:a="urn:2" xmlns:b="urn:2" xmlns:c="urn:3"/>"#
+    /// );
+    /// # Ok::<(), xot::Error>(())
+    /// ```
+    ///
+    /// Where `insert` looks through the nodes of the map for each pair,
+    /// `extend` looks through them once, and again only for a key that may
+    /// be in the map: it keeps a bit for each key of the map (the id of the
+    /// key modulo 64), and looks for a key whose bit is set as `insert` does.
+    fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, pairs: I) {
+        // the bits of the keys in the map, and the insertion point
+        let mut keys = 0u64;
+        let Err(mut insertion_point) = A::find_or_end(self.xot, self.parent, |value| {
+            keys |= A::key_bit(A::key(value));
+            false
+        }) else {
+            unreachable!("no node is looked for");
+        };
+        for (key, value) in pairs {
+            let bit = A::key_bit(key);
+            if keys & bit != 0 {
+                // the map may have the key
+                match A::find_or_end(self.xot, self.parent, |value| A::key(value) == key) {
+                    Ok(node) => {
+                        A::update(self.xot.value_mut(node), value);
+                        continue;
+                    }
+                    Err(end) => debug_assert_eq!(end, insertion_point),
+                }
+            }
+            // a new node goes after the last node of the map, which is the
+            // node inserted last, if any
+            keys |= bit;
+            let node = self.xot.arena.new_node(A::create(key, value));
+            self.attach(insertion_point, node);
+            insertion_point = Some(Node::new(node));
         }
     }
 }
@@ -521,3 +608,6 @@ mod tests {
         assert_eq!(namespaces.get(foo_prefix), Some(&foo_ns));
     }
 }
+
+#[cfg(test)]
+mod insert_tests;

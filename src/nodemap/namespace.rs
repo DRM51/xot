@@ -1,7 +1,7 @@
 use crate::xmlvalue::{Namespace, Value, ValueCategory};
 use crate::{NamespaceId, Node, PrefixId, Xot};
 
-use super::core::{MutableNodeMap, NodeMap, ValueAdapter};
+use super::core::{key_bit, MutableNodeMap, NodeMap, ValueAdapter};
 
 pub struct NamespaceAdapter {}
 
@@ -17,15 +17,29 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
             .take_while(|(_, value)| value.value_category() == ValueCategory::Namespace)
     }
 
+    // the map is the namespace nodes at the start of the children; a new one
+    // goes after the last of them, or first if there is none
     #[inline]
-    fn insertion_point(xot: &Xot, node: Node) -> Option<Node> {
-        let last_child = Self::children(xot, node).last();
-        // if there is a last child, insert after it
-        if let Some(last_child) = last_child {
-            return Some(last_child);
+    fn find_or_end(
+        xot: &Xot,
+        node: Node,
+        mut found: impl FnMut(&Value) -> bool,
+    ) -> Result<Node, Option<Node>> {
+        let mut last = None;
+        let found = xot.arena.find_child(node.get(), |child, value| {
+            if !matches!(value, Value::Namespace(_)) {
+                return Some(None);
+            }
+            if found(value) {
+                return Some(Some(child));
+            }
+            last = Some(child);
+            None
+        });
+        match found.flatten() {
+            Some(child) => Ok(Node::new(child)),
+            None => Err(last.map(Node::new)),
         }
-        // if there is no namespace node, we want to prepend
-        None
     }
 
     #[inline]
@@ -34,6 +48,11 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
             Value::Namespace(Namespace { prefix_id, .. }) => *prefix_id,
             _ => unreachable!(),
         }
+    }
+
+    #[inline]
+    fn key_bit(key: PrefixId) -> u64 {
+        key_bit(key.0)
     }
 
     #[inline]

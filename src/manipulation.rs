@@ -5,6 +5,7 @@ use crate::{xmlname, MutableAttributes, MutableNamespaces, NamespaceId, PrefixId
 
 use crate::error::Error;
 use crate::id::NameId;
+use crate::nodemap::key_bit;
 use crate::xmlvalue::{Value, ValueCategory, ValueType};
 
 /// ## Manipulation
@@ -1141,11 +1142,5 @@ enum Copied {
     Attribute(u64),
 }
 
-/// The bit of a prefix or name id in a filter of 64 bits.
-#[inline]
-fn key_bit(id: u16) -> u64 {
-    1 << (id % 64)
-}
-
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

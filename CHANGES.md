@@ -84,6 +84,14 @@
   do. It applies to all the XML serialization functions, those with a
   normalizer too, and to `Xot::tokens` and `Xot::pretty_tokens`.
 
+- `MutableNodeMap` implements `Extend<(K, V)>`, so that the maps that
+  `Xot::namespaces_mut` and `Xot::attributes_mut` give take several pairs at
+  once. `extend` gives the same tree as `insert` of each pair in turn, but
+  looks through the nodes of the map once instead of once for each pair, and
+  again only for a key that may be in the map already. Adding 14 namespaces
+  to an element with `extend` takes 0.3 to 0.5 times as long as adding them
+  one at a time with `insert`, and 56 namespaces 0.2 times as long.
+
 ### Bugs fixed
 
 - XML output now escapes characters as the XML output method of
@@ -397,6 +405,21 @@
   node, instead of three and a reallocation, and takes 63 ns instead of 91;
   appending a new text to an element without one takes 34 ns instead of 49,
   and detaching the element between two texts 37 ns instead of 96.
+
+- An insert into an attribute or namespace map, through
+  `MutableNodeMap::insert`, `Xot::set_attribute`, `Xot::set_namespace`,
+  `Xot::append_attribute_node`, `Xot::append_namespace_node` or
+  `Xot::any_append`, looks through the nodes of the map once, for the key and
+  for the place of a new node, where it looked through them twice. As it goes
+  from one node to the next, it reads the slot after the slot of the node
+  before, where nodes made one after another mostly are, without waiting to
+  read where the next node is, which then only confirms it. The nodes end up
+  where they did. Adding 14 namespaces one at a time to each of 20,000
+  elements takes 300 ns an element instead of 840 ns, 56 namespaces 2.7 µs
+  instead of 9.7 µs, and one namespace 16 ns instead of 35 ns; on a
+  generated document of 25 megabytes with 2.0M nodes, adding an attribute to
+  an element takes 24 ns instead of 44 ns, and 14 namespaces 23 ns each
+  instead of 66 ns.
 
 ### Other changes
 
