@@ -71,7 +71,6 @@ libraries.
 
 ## Implementation notes
 
-Xot underneath uses the
-[indextree](https://docs.rs/indextree/latest/indextree/) crate. Xot completely
-wraps the indextree functionality but the various operations it allows are
-taken from indextree.
+Xot keeps its nodes in an arena of its own, whose operations are adapted from
+those of the [indextree](https://docs.rs/indextree/latest/indextree/) crate
+(version 4.7.2), which Xot used before. Xot completely wraps this arena.

@@ -327,9 +327,11 @@
 - Xot keeps its nodes in an arena of its own instead of indextree's. A node
   takes 64 bytes instead of 128: its value, the positions of its parent, its
   siblings and its first and last child as `u32`, and a `u32` generation. The
-  arena grows in chunks of 65,536 nodes (4 MiB) that never move, so growing it
-  no longer copies the nodes or holds two copies of them for a moment, as the
-  vector that doubled did. A `Node` takes 8 bytes instead of 16. On a
+  nodes are kept in chunks of 65,536 (4 MiB): the first chunk grows like a
+  vector, and each later one is made with room for all its nodes and never
+  moves, so that growing the arena copies at most the first chunk, where the
+  vector that doubled copied all the nodes and held two copies of them for a
+  moment. A `Node` takes 8 bytes instead of 16. On a
   generated document of 25 megabytes with 2.0M nodes, the heap after parsing
   takes 130.9 MiB instead of 262.9 MiB, the heap peaks at 302.0 MiB instead of
   530.0 MiB while parsing, parsing peaks at 429.5 MiB of resident memory
@@ -461,7 +463,11 @@
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text
-  and its hash change: `Node(NodeId { index1: 1, generation: 0 })`.
+  and its hash change: `Node(NodeId { index1: 1, generation: 0 })`. The
+  debug text of a `Xot` changes too, as it shows the arena of its nodes, and
+  so does that of the attribute and namespace maps (`Attributes`,
+  `Namespaces`, `MutableAttributes` and `MutableNamespaces`), which show
+  their `Xot`.
 
 - `impl From<indextree::NodeId> for Node` stays, for code that uses it: it
   gives the node at the position of the id, with the generation 0. As the
