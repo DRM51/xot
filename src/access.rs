@@ -484,11 +484,6 @@ impl Xot {
         }
     }
 
-    #[inline]
-    pub(crate) fn internal_last_child(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena.last_child(node.get())?))
-    }
-
     /// Get next sibling.
     ///
     /// Returns [`None`] if there is no next sibling.
@@ -527,11 +522,6 @@ impl Xot {
             return None;
         }
         Some(Node::new(previous_sibling))
-    }
-
-    #[inline]
-    pub(crate) fn internal_previous_sibling(&self, node: Node) -> Option<Node> {
-        Some(Node::new(self.arena.previous_sibling(node.get())?))
     }
 
     /// Iterator over ancestor nodes, including this one.
@@ -629,11 +619,6 @@ impl Xot {
     }
 
     #[inline]
-    fn normal_node_filter(&self) -> impl Fn(Node) -> bool + '_ {
-        move |node| self.arena.get(node.get()).is_normal()
-    }
-
-    #[inline]
     fn category_filter(&self, category: ValueCategory) -> impl Fn(&NodeId) -> bool + '_ {
         move |node_id| self.arena.get(*node_id).value_category() == category
     }
@@ -680,7 +665,10 @@ impl Xot {
     ///
     /// Namespace and attribute nodes are not included in the traversal.
     pub fn reverse_preorder(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        ReversePreorder::new(self, node, self.normal_node_filter())
+        self.arena
+            .reverse_preorder(node.get())
+            .filter(|(_, value)| arena::live(*value).is_normal())
+            .map(|(node_id, _)| Node::new(node_id))
     }
 
     /// Reverse preorder traversal from node for all nodes.
@@ -688,7 +676,9 @@ impl Xot {
     /// Like [`Xot::reverse_preorder`] but includes namespace and
     /// attribute nodes too.
     pub fn all_reverse_preorder(&self, node: Node) -> impl Iterator<Item = Node> + '_ {
-        ReversePreorder::new(self, node, |_| true)
+        self.arena
+            .reverse_preorder(node.get())
+            .map(|(node_id, _)| Node::new(node_id))
     }
 
     /// Iterator over the following siblings of this node, including this one.
@@ -992,49 +982,5 @@ fn node_edge(edge: ArenaNodeEdge) -> NodeEdge {
     match edge {
         ArenaNodeEdge::Start(node_id) => NodeEdge::Start(Node::new(node_id)),
         ArenaNodeEdge::End(node_id) => NodeEdge::End(Node::new(node_id)),
-    }
-}
-
-struct ReversePreorder<'a, F: Fn(Node) -> bool> {
-    xot: &'a Xot,
-    current: Option<Node>,
-    filter: F,
-}
-
-impl<'a, F: Fn(Node) -> bool> ReversePreorder<'a, F> {
-    fn new(xot: &'a Xot, current: Node, filter: F) -> Self {
-        Self {
-            xot,
-            current: Some(current),
-            filter,
-        }
-    }
-}
-
-impl<F: Fn(Node) -> bool> Iterator for ReversePreorder<'_, F> {
-    type Item = Node;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(current) = self.current {
-            // if we have a previous sibling, go to the rightmost deepest descendant
-            let previous = self.xot.internal_previous_sibling(current);
-            let next = if let Some(mut node) = previous {
-                while let Some(last_child) = self.xot.internal_last_child(node) {
-                    node = last_child;
-                }
-                Some(node)
-            } else {
-                // if we don't have a previous sibling, go to parent
-                self.xot.parent(current)
-            };
-            self.current = next;
-            // if we don't pass the filter, go to the next node
-            if !(self.filter)(current) {
-                return self.next();
-            }
-            Some(current)
-        } else {
-            None
-        }
     }
 }

@@ -376,6 +376,14 @@
   2.1 to 2.3 ns a node instead of 2.3 to 2.5 ns, and `next_sibling` and
   `previous_sibling` 1.3 ns instead of 2.4 ns.
 
+- `Xot::reverse_preorder` and `Xot::all_reverse_preorder` go through the
+  nodes with an iterator of the arena that reads each node once, where they
+  took the previous sibling, the last child and the parent of each node in
+  calls of their own, and `reverse_preorder` read each node again to leave
+  out namespace and attribute nodes. On a generated document of 25 megabytes
+  with 2.0M nodes, `all_reverse_preorder` from the last node takes 1.9 ns a
+  node instead of 2.3 ns, and `reverse_preorder` 2.1 ns instead of 3.8 ns.
+
 - Removing a node no longer reads the nodes it refers to. A removed node
   keeps the generations of its parent and its previous sibling, which
   `Xot::remove` knows as it removes a tree in document order, so that their

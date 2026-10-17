@@ -1605,6 +1605,23 @@ impl<T> Arena<T> {
         }
     }
 
+    /// The node and the nodes before it in document order, from the node
+    /// back, each with its data, as [`Arena::descendants_data`] gives it: the
+    /// last descendant of the previous sibling of a node comes after it, or
+    /// its parent where it has no previous sibling, up to the root of the
+    /// tree. Each step reads one slot, and the slots that it goes down
+    /// through by the last child.
+    #[inline]
+    pub(crate) fn reverse_preorder(
+        &self,
+        node_id: NodeId,
+    ) -> impl Iterator<Item = (NodeId, Option<&T>)> + '_ {
+        ReversePreorder {
+            chunks: &self.chunks,
+            next: Link::known(node_id),
+        }
+    }
+
     /// The node and its ancestors, from the node up.
     pub(crate) fn ancestors(&self, node_id: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         Ancestors {
@@ -2104,6 +2121,45 @@ impl<'a, T> Iterator for Following<'a, T> {
 }
 
 impl<T> std::iter::FusedIterator for Following<'_, T> {}
+
+/// The nodes that [`Arena::reverse_preorder`] gives.
+#[derive(Clone)]
+struct ReversePreorder<'a, T> {
+    chunks: &'a [Vec<Slot<T>>],
+    next: Link,
+}
+
+impl<'a, T> Iterator for ReversePreorder<'a, T> {
+    type Item = (NodeId, Option<&'a T>);
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let index1 = NonZeroU32::new(self.next.index1)?;
+        let slot = slot_in(self.chunks, index1.get());
+        let node_id = NodeId {
+            index1,
+            generation: self.next.generation.unwrap_or(slot.generation),
+        };
+        self.next = if slot.link[PREVIOUS] != 0 {
+            // the last descendant of the previous sibling, or that sibling;
+            // the generation of the node is read from its slot at the next
+            // step, unless a free slot kept it
+            let mut link = slot.link_to(PREVIOUS);
+            loop {
+                let below = slot_in(self.chunks, link.index1);
+                if below.link[LAST] == 0 {
+                    break link;
+                }
+                link = below.link_to(LAST);
+            }
+        } else {
+            slot.link_to(PARENT)
+        };
+        Some((node_id, slot.data()))
+    }
+}
+
+impl<T> std::iter::FusedIterator for ReversePreorder<'_, T> {}
 
 #[cfg(test)]
 mod tests;
