@@ -430,8 +430,10 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn detach(&mut self, node: Node) -> Result<(), Error> {
-        let prev_node = self.previous_sibling(node);
-        let next_node = self.next_sibling(node);
+        let Some((prev_node, next_node)) = self.normal_siblings(node) else {
+            self.arena.detach(node.get());
+            return Ok(());
+        };
         self.arena.detach(node.get());
         self.remove_consolidate_text_nodes(prev_node, next_node);
         Ok(())
@@ -461,8 +463,10 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn remove(&mut self, node: Node) -> Result<(), Error> {
-        let prev_node = self.previous_sibling(node);
-        let next_node = self.next_sibling(node);
+        let Some((prev_node, next_node)) = self.normal_siblings(node) else {
+            self.arena.remove_subtree(node.get());
+            return Ok(());
+        };
         self.arena.remove_subtree(node.get());
         self.remove_consolidate_text_nodes(prev_node, next_node);
         Ok(())
@@ -1050,6 +1054,29 @@ impl Xot {
             }
         }
         false
+    }
+
+    /// The previous and the next sibling of `node`, as
+    /// [`Xot::previous_sibling`] and [`Xot::next_sibling`] give them, for
+    /// the texts that may be joined when `node` is taken away; `None` for a
+    /// namespace or an attribute node, whose siblings are of its kind, so
+    /// that no texts are joined. This reads the nodes as those two read them,
+    /// and panics as they do for a removed node.
+    #[inline]
+    fn normal_siblings(&self, node: Node) -> Option<(Option<Node>, Option<Node>)> {
+        if !self.arena.get(node.get()).is_normal() {
+            return None;
+        }
+        // the siblings of a normal node that are normal nodes too
+        let normal = |sibling: Option<arena::NodeId>| {
+            sibling
+                .filter(|&sibling| self.arena.get(sibling).is_normal())
+                .map(Node::new)
+        };
+        Some((
+            normal(self.arena.previous_sibling(node.get())),
+            normal(self.arena.next_sibling(node.get())),
+        ))
     }
 
     fn remove_consolidate_text_nodes(

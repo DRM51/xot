@@ -336,13 +336,27 @@
   instead of 617.6 MiB, and it takes 389 ms instead of 453 ms. Two copies of
   the document with `clone_node` and their serialization peak at 800.4 MiB of
   resident memory instead of 1306.4 MiB, with 436.7 MiB of heap instead of
-  1140.7 MiB. Walks up through parents take about 0.6 ns a node more, and
-  removing a node 2 to 6 ns more, as a removed node keeps the generations of
-  the nodes it refers to.
+  1140.7 MiB. Walks up through parents take about 0.6 ns a node more.
 
 - Attribute and namespace maps, and `first_child`, read each node once as
   they go through children, and the small accessors are inline, so that a
   caller in another crate reads a node once for several of them.
+
+- Removing a node no longer reads the nodes it refers to. A removed node
+  keeps the generations of its parent and its previous sibling, which
+  `Xot::remove` knows as it removes a tree in document order, so that their
+  slots are not read again; the generations of the other nodes it refers to
+  are read from their slots when they are needed, as no later node takes
+  these slots before one takes the slot of the removed node. `Xot::remove`
+  and `Xot::detach` of a namespace or attribute node no longer look at its
+  siblings, which are of its kind and so never texts that join. A new node
+  takes a free slot with one look at the slot instead of two. On a generated
+  document of 25 megabytes with 2.0M nodes, removing the document takes 7.6
+  ns a node instead of 8.2 ns, removing a copy of it 7.5 ns instead of 8.3
+  ns, and removing 14 namespace nodes of each of 100,000 elements 18.7 ns a
+  node instead of 19.0 ns; removing a tree of elements without texts or
+  attributes takes 6.6 ns a node instead of 6.2 ns, and a loop that makes an
+  element and removes it again 12.0 ns instead of 11.7 ns.
 
 - `Xot::parse` and `Xot::parse_fragment` no longer collect the span
   information that `Xot::parse_with_span_info` and

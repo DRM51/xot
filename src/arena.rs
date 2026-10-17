@@ -97,6 +97,14 @@ const CHUNK_LEN: usize = 1 << CHUNK_BITS;
 /// The position of a slot in its chunk is its position `& CHUNK_MASK`.
 const CHUNK_MASK: u32 = (1 << CHUNK_BITS) - 1;
 
+/// The chunk of the slot with the position plus one `index1`, and the place
+/// of the slot in the chunk; `index1` is not 0.
+#[inline(always)]
+fn place(index1: u32) -> (u32, usize) {
+    let position = index1 - 1;
+    (position >> CHUNK_BITS, (position & CHUNK_MASK) as usize)
+}
+
 // The fields of a slot that refer to other nodes, as indices into
 // `Slot::link` and `FreeSlot::link_generations`.
 const PARENT: usize = 0;
@@ -186,8 +194,41 @@ struct FreeSlot {
     /// The position plus one of the next slot of the free list, 0 for none.
     next_free: u32,
     /// The generations of the nodes that the fields in `Slot::link` refer
-    /// to, as they were when the node was removed, 0 where there is none.
+    /// to, as they were when the node was removed, for the fields whose bit
+    /// is set in `kept`; 0 for the others.
     link_generations: [u32; 5],
+    /// Bit `k` is set where entry `k` of `link_generations` holds the
+    /// generation of the node that entry `k` of `Slot::link` refers to. Where
+    /// it is not set, the generation is read from the slot of that node: the
+    /// entry referred to a node that was not removed when this one was, which
+    /// can only be removed later, so that its slot comes after this one on
+    /// the free list and no later node takes it before one takes this slot.
+    kept: u8,
+}
+
+/// A node that an operation knows, as the position of its slot plus one
+/// (0 for none) and its generation, for [`Arena::free_node`].
+#[derive(Clone, Copy)]
+struct Known {
+    index1: u32,
+    generation: u32,
+}
+
+impl Known {
+    const NONE: Known = Known {
+        index1: 0,
+        generation: 0,
+    };
+}
+
+/// Some fields of a node that [`Arena::free_node`] removed, as positions
+/// plus one (0 for none), and its generation.
+#[derive(Clone, Copy)]
+struct Freed {
+    parent: u32,
+    next: u32,
+    first: u32,
+    generation: u32,
 }
 
 impl<T> Slot<T> {
@@ -196,17 +237,25 @@ impl<T> Slot<T> {
         matches!(self.data, SlotData::Free(_))
     }
 
-    /// The node that entry `k` of the fields of this slot refers to: from a
-    /// live slot with the generation of the slot it refers to, from a free
-    /// slot with the generation kept for it.
+    /// The node that entry `k` of the fields of this slot refers to: with the
+    /// generation of the slot it refers to, or from a free slot with the
+    /// generation kept for it, if one is kept.
     #[inline(always)]
     fn link_to(&self, k: usize) -> Link {
         Link {
             index1: self.link[k],
-            generation: match &self.data {
-                SlotData::Live(_) => None,
-                SlotData::Free(free) => Some(free.link_generations[k]),
-            },
+            generation: self.kept_generation(k),
+        }
+    }
+
+    /// The generation kept for entry `k` of the fields of a free slot, if
+    /// one is kept; otherwise the generation is that of the slot that the
+    /// entry refers to.
+    #[inline(always)]
+    fn kept_generation(&self, k: usize) -> Option<u32> {
+        match &self.data {
+            SlotData::Free(free) if free.kept & (1 << k) != 0 => Some(free.link_generations[k]),
+            _ => None,
         }
     }
 }
@@ -304,15 +353,15 @@ impl<T> Arena<T> {
     /// The slot at the position `index1 - 1`; `index1` is not 0.
     #[inline(always)]
     fn slot(&self, index1: u32) -> &Slot<T> {
-        let position = index1 - 1;
-        &self.chunks[(position >> CHUNK_BITS) as usize][(position & CHUNK_MASK) as usize]
+        let (chunk, place) = place(index1);
+        &self.chunks[chunk as usize][place]
     }
 
     /// The slot at the position `index1 - 1`, to change; `index1` is not 0.
     #[inline(always)]
     fn slot_mut(&mut self, index1: u32) -> &mut Slot<T> {
-        let position = index1 - 1;
-        &mut self.chunks[(position >> CHUNK_BITS) as usize][(position & CHUNK_MASK) as usize]
+        let (chunk, place) = place(index1);
+        &mut self.chunks[chunk as usize][place]
     }
 
     /// The generation of the node that `link` refers to; it refers to one.
@@ -351,6 +400,11 @@ impl<T> Arena<T> {
             };
             if let SlotData::Free(free) = &mut self.slot_mut(node.index1).data {
                 free.link_generations[k] = generation;
+                if target.is_some() {
+                    free.kept |= 1 << k;
+                } else {
+                    free.kept &= !(1 << k);
+                }
             }
         }
     }
@@ -363,6 +417,7 @@ impl<T> Arena<T> {
         slot.link[k] = 0;
         if let SlotData::Free(free) = &mut slot.data {
             free.link_generations[k] = 0;
+            free.kept &= !(1 << k);
         }
         link
     }
@@ -380,23 +435,28 @@ impl<T> Arena<T> {
     /// Panics with `Too many nodes in the arena` if the arena has `u32::MAX`
     /// slots already and none is free.
     pub(crate) fn new_node(&mut self, data: T) -> NodeId {
-        if let Some(index1) = self.pop_front_free_node() {
+        if let Some(index1) = NonZeroU32::new(self.first_free) {
+            // the first slot of the free list, which this takes off it
             let slot = self.slot_mut(index1.get());
-            debug_assert!(slot.is_free());
+            let next_free = match &slot.data {
+                SlotData::Free(free) => free.next_free,
+                SlotData::Live(_) => unreachable!("A data node consider as a freed node"),
+            };
             // never overflows: a slot with the generation u32::MAX is not on
             // the free list
             slot.generation += 1;
             slot.link = [0; 5];
             slot.data = SlotData::Live(data);
-            NodeId {
-                index1,
-                generation: slot.generation,
+            let generation = slot.generation;
+            self.first_free = next_free;
+            if next_free == 0 {
+                self.last_free = 0;
             }
+            NodeId { index1, generation }
         } else {
-            let position = self.len;
             let index1 =
-                NonZeroU32::new(position.wrapping_add(1)).expect("Too many nodes in the arena");
-            let chunk = (position >> CHUNK_BITS) as usize;
+                NonZeroU32::new(self.len.wrapping_add(1)).expect("Too many nodes in the arena");
+            let chunk = place(index1.get()).0 as usize;
             if chunk == self.chunks.len() {
                 // the first chunk grows like a Vec; every later one is made
                 // with room for all its slots, so that it never moves
@@ -419,55 +479,54 @@ impl<T> Arena<T> {
         }
     }
 
-    /// Take the first slot of the free list off it.
-    fn pop_front_free_node(&mut self) -> Option<NonZeroU32> {
-        let first = NonZeroU32::new(self.first_free)?;
-        let next_free = match &self.slot(first.get()).data {
-            SlotData::Free(free) => free.next_free,
-            SlotData::Live(_) => unreachable!("A data node consider as a freed node"),
-        };
-        self.first_free = next_free;
-        if next_free == 0 {
-            self.last_free = 0;
+    /// Mark the node in the slot at `index1 - 1` as removed, and put the slot
+    /// at the end of the free list, unless its generation is `u32::MAX`: then
+    /// no later node takes the slot. The fields of the slot stay as they are;
+    /// some of them are returned with the generation of the node.
+    ///
+    /// The node keeps the generations of the nodes that its fields refer to
+    /// where a later node could take their slots before one takes this slot
+    /// (see [`FreeSlot::kept`]): for the parent and the previous sibling,
+    /// which the caller may have removed before, and for all of them when
+    /// the slot is not put on the free list. `parent` and `previous` give the
+    /// nodes that the caller knows for these two, so that their slots need
+    /// not be looked at; where the parent or the previous sibling is another
+    /// node, the generation comes from its slot. The nodes that the other
+    /// fields refer to are not removed yet.
+    #[inline(always)]
+    fn free_node(&mut self, index1: u32, parent: Known, previous: Known) -> Freed {
+        let slot = self.slot_mut(index1);
+        debug_assert!(!slot.is_free(), "a removed node is removed again");
+        let (link, generation) = (slot.link, slot.generation);
+        let known = |k: usize, node: Known| link[k] == 0 || link[k] == node.index1;
+        if generation == u32::MAX || !known(PARENT, parent) || !known(PREVIOUS, previous) {
+            return self.free_node_in_full(index1, parent, previous);
         }
-        Some(first)
-    }
-
-    /// Mark the node in the slot at `index1 - 1` as removed, keeping the
-    /// generations its fields refer to, and put the slot at the end of the
-    /// free list, unless its generation is `u32::MAX`: then no later node
-    /// takes the slot. The fields of the slot, which stay as they are.
-    fn free_node(&mut self, index1: u32) -> [u32; 5] {
-        let position = index1 - 1;
-        let (c, o) = (
-            (position >> CHUNK_BITS) as usize,
-            (position & CHUNK_MASK) as usize,
-        );
-        let link = self.chunks[c][o].link;
-        let mut link_generations = [0; 5];
-        if link != [0; 5] {
-            let chunk = &self.chunks[c];
-            for (generation, &target) in link_generations.iter_mut().zip(&link) {
-                if target != 0 {
-                    // most nodes a node refers to are in its own chunk
-                    let target = target - 1;
-                    *generation = if target >> CHUNK_BITS == position >> CHUNK_BITS {
-                        chunk[(target & CHUNK_MASK) as usize].generation
-                    } else {
-                        self.slot(target + 1).generation
-                    };
-                }
+        // what `free_slot` gives when the caller knows both nodes
+        let mut free = FreeSlot {
+            next_free: 0,
+            link_generations: [0; 5],
+            kept: 0,
+        };
+        for (k, known) in [(PARENT, parent), (PREVIOUS, previous)] {
+            if link[k] != 0 {
+                free.link_generations[k] = known.generation;
+                free.kept |= 1 << k;
             }
         }
-        let slot = &mut self.chunks[c][o];
-        debug_assert!(!slot.is_free(), "a removed node is removed again");
-        slot.data = SlotData::Free(FreeSlot {
-            next_free: 0,
-            link_generations,
-        });
-        if slot.generation == u32::MAX {
-            return link;
+        slot.data = SlotData::Free(free);
+        self.push_free(index1);
+        Freed {
+            parent: link[PARENT],
+            next: link[NEXT],
+            first: link[FIRST],
+            generation,
         }
+    }
+
+    /// Put the free slot at `index1` at the end of the free list.
+    #[inline(always)]
+    fn push_free(&mut self, index1: u32) {
         if self.last_free != 0 {
             let last_free = self.last_free;
             if let SlotData::Free(free) = &mut self.slot_mut(last_free).data {
@@ -479,7 +538,63 @@ impl<T> Arena<T> {
             self.first_free = index1;
             self.last_free = index1;
         }
-        link
+    }
+
+    /// The free list entry of a node with the fields `link`, with the
+    /// generations of its parent and its previous sibling, as
+    /// [`Arena::free_node`] keeps them.
+    #[inline(always)]
+    fn free_slot(&self, link: [u32; 5], parent: Known, previous: Known) -> FreeSlot {
+        let mut free = FreeSlot {
+            next_free: 0,
+            link_generations: [0; 5],
+            kept: 0,
+        };
+        for (k, known) in [(PARENT, parent), (PREVIOUS, previous)] {
+            let target = link[k];
+            if target != 0 {
+                free.link_generations[k] = if target == known.index1 {
+                    known.generation
+                } else {
+                    self.slot(target).generation
+                };
+                free.kept |= 1 << k;
+            }
+        }
+        free
+    }
+
+    /// [`Arena::free_node`] where it looks up generations in the slots that
+    /// the fields refer to: for a parent or a previous sibling that the
+    /// caller does not give, and for a slot with the generation `u32::MAX`,
+    /// which is not put on the free list, so that its node keeps the
+    /// generations of all the nodes its fields refer to.
+    #[cold]
+    #[inline(never)]
+    fn free_node_in_full(&mut self, index1: u32, parent: Known, previous: Known) -> Freed {
+        let slot = self.slot(index1);
+        let (link, generation) = (slot.link, slot.generation);
+        let mut free = self.free_slot(link, parent, previous);
+        let last = generation == u32::MAX;
+        if last {
+            for k in [NEXT, FIRST, LAST] {
+                let target = link[k];
+                if target != 0 {
+                    free.link_generations[k] = self.slot(target).generation;
+                    free.kept |= 1 << k;
+                }
+            }
+        }
+        self.slot_mut(index1).data = SlotData::Free(free);
+        if !last {
+            self.push_free(index1);
+        }
+        Freed {
+            parent: link[PARENT],
+            next: link[NEXT],
+            first: link[FIRST],
+            generation,
+        }
     }
 
     /// The data of the node in the slot of `node_id`.
@@ -509,13 +624,13 @@ impl<T> Arena<T> {
     ///
     /// Panics if either node is removed.
     pub(crate) fn get_pair_mut(&mut self, a: NodeId, b: NodeId) -> Option<(&mut T, &mut T)> {
-        let (a, b) = (a.index1.get() - 1, b.index1.get() - 1);
+        let (a, b) = (a.index1.get(), b.index1.get());
         if a == b {
             return None;
         }
         // the chunk of each and the position in it
-        let (chunk_a, in_a) = ((a >> CHUNK_BITS) as usize, (a & CHUNK_MASK) as usize);
-        let (chunk_b, in_b) = ((b >> CHUNK_BITS) as usize, (b & CHUNK_MASK) as usize);
+        let ((chunk_a, in_a), (chunk_b, in_b)) = (place(a), place(b));
+        let (chunk_a, chunk_b) = (chunk_a as usize, chunk_b as usize);
         // split the slots, or the chunks, between the two
         let (slot_a, slot_b) = if chunk_a == chunk_b {
             let chunk = &mut self.chunks[chunk_a];
@@ -549,16 +664,16 @@ impl<T> Arena<T> {
     }
 
     /// The node that entry `k` of the fields of the slot of `node_id` refers
-    /// to. The
-    /// generation comes from the slot of that node, read as [`Arena::get`]
-    /// reads it, so that the compiler can share the two reads.
+    /// to. The generation comes from the slot of that node, read as
+    /// [`Arena::get`] reads it, so that the compiler can share the two reads,
+    /// unless the slot of `node_id` is free and kept it.
     #[inline(always)]
     fn read_link(&self, node_id: NodeId, k: usize) -> Option<NodeId> {
         let slot = self.slot(node_id.index1.get());
         let index1 = NonZeroU32::new(slot.link[k])?;
-        let generation = match &slot.data {
-            SlotData::Live(_) => self.slot(index1.get()).generation,
-            SlotData::Free(free) => free.link_generations[k],
+        let generation = match slot.kept_generation(k) {
+            Some(generation) => generation,
+            None => self.slot(index1.get()).generation,
         };
         Some(NodeId { index1, generation })
     }
@@ -800,10 +915,7 @@ impl<T> Arena<T> {
             }
             let slot = self.slot(index1);
             if index1 == target.index1.get() {
-                let generation = match &source.data {
-                    SlotData::Live(_) => slot.generation,
-                    SlotData::Free(free) => free.link_generations[PARENT],
-                };
+                let generation = source.kept_generation(PARENT).unwrap_or(slot.generation);
                 if generation == target.generation {
                     return true;
                 }
@@ -1170,7 +1282,8 @@ impl<T> Arena<T> {
             )
             .expect("Should never fail: neighbors and children must agree");
         }
-        self.free_node(node.index1);
+        // the node has no parent and no siblings now
+        self.free_node(node.index1, Known::NONE, Known::NONE);
         debug_assert!(self.is_detached(node));
     }
 
@@ -1181,21 +1294,42 @@ impl<T> Arena<T> {
     pub(crate) fn remove_subtree(&mut self, node_id: NodeId) {
         self.detach(node_id);
         // a preorder traversal, by position: the first child, else the next
-        // sibling, else the next sibling of the nearest ancestor that has one
+        // sibling, else the next sibling of the nearest ancestor that has
+        // one. It knows the parent and the previous sibling of the node it
+        // comes to, which it removed before, and their generations.
         let mut cursor = node_id.index1.get();
+        let (mut parent, mut previous) = (Known::NONE, Known::NONE);
         loop {
-            let link = self.free_node(cursor);
-            cursor = if link[FIRST] != 0 {
-                link[FIRST]
-            } else if link[NEXT] != 0 {
-                link[NEXT]
+            let freed = self.free_node(cursor, parent, previous);
+            let this = Known {
+                index1: cursor,
+                generation: freed.generation,
+            };
+            cursor = if freed.first != 0 {
+                (parent, previous) = (this, Known::NONE);
+                freed.first
+            } else if freed.next != 0 {
+                previous = this;
+                freed.next
             } else {
-                let mut ancestor = link[PARENT];
+                let mut ancestor = freed.parent;
                 let mut next = 0;
                 while ancestor != 0 {
                     let ancestor_slot = self.slot(ancestor);
                     if ancestor_slot.link[NEXT] != 0 {
                         next = ancestor_slot.link[NEXT];
+                        previous = Known {
+                            index1: ancestor,
+                            generation: ancestor_slot.generation,
+                        };
+                        // the ancestor kept the generation of its parent
+                        parent = match ancestor_slot.kept_generation(PARENT) {
+                            Some(generation) => Known {
+                                index1: ancestor_slot.link[PARENT],
+                                generation,
+                            },
+                            None => Known::NONE,
+                        };
                         break;
                     }
                     ancestor = ancestor_slot.link[PARENT];
@@ -1413,8 +1547,8 @@ impl<T: PartialEq + std::fmt::Debug> Arena<T> {
 /// a node by an iterator and by its caller; `index1` is not 0.
 #[inline(always)]
 fn slot_in<T>(chunks: &[Vec<Slot<T>>], index1: u32) -> &Slot<T> {
-    let position = index1 - 1;
-    &chunks[(position >> CHUNK_BITS) as usize][(position & CHUNK_MASK) as usize]
+    let (chunk, place) = place(index1);
+    &chunks[chunk as usize][place]
 }
 
 /// The reader of slots of the iterators that walk along siblings or up. It holds the chunks themselves
@@ -1443,26 +1577,24 @@ impl<'a, T> Cursor<'a, T> {
     /// The slot at the position `index1 - 1`; `index1` is not 0.
     #[inline(always)]
     fn slot(&mut self, index1: u32) -> &'a Slot<T> {
-        let position = index1 - 1;
-        let chunk_index = position >> CHUNK_BITS;
+        let (chunk_index, place) = place(index1);
         if chunk_index != self.chunk_index {
             self.chunk = &self.chunks[chunk_index as usize];
             self.chunk_index = chunk_index;
         }
-        &self.chunk[(position & CHUNK_MASK) as usize]
+        &self.chunk[place]
     }
 
     /// The chunk of the slot at the position `index1 - 1`, and the position
     /// of the slot in it; `index1` is not 0.
     #[inline(always)]
     fn chunk(&mut self, index1: u32) -> (&'a [Slot<T>], usize) {
-        let position = index1 - 1;
-        let chunk_index = position >> CHUNK_BITS;
+        let (chunk_index, place) = place(index1);
         if chunk_index != self.chunk_index {
             self.chunk = &self.chunks[chunk_index as usize];
             self.chunk_index = chunk_index;
         }
-        (self.chunk, (position & CHUNK_MASK) as usize)
+        (self.chunk, place)
     }
 }
 

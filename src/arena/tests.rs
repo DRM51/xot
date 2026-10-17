@@ -343,6 +343,42 @@ fn removed_nodes_read_what_they_had_after_their_slots_are_taken() {
 }
 
 #[test]
+fn a_removed_node_whose_slot_is_not_taken_again_keeps_every_generation() {
+    // a slot with the last generation is not put on the free list, so that
+    // later nodes can take the slots its fields refer to while it stays
+    // removed; reads through it give the nodes it had
+    let mut arena = Arena::new();
+    let root = arena.new_node(0);
+    let children = tree(&mut arena, root, &[1, 2, 3]);
+    let grandchildren = tree(&mut arena, children[1], &[21, 22]);
+    arena.slot_mut(children[1].index1.get()).generation = u32::MAX;
+    let middle = NodeId {
+        index1: children[1].index1,
+        generation: u32::MAX,
+    };
+    let had = my_read(&arena, middle);
+    assert_eq!(
+        had,
+        [
+            Some(my_key(root)),
+            Some(my_key(children[0])),
+            Some(my_key(children[2])),
+            Some(my_key(grandchildren[0])),
+            Some(my_key(grandchildren[1])),
+        ]
+    );
+    arena.remove_subtree(root);
+    // the other five slots are taken again, the slot of `middle` is not
+    for _ in 0..5 {
+        let new = arena.new_node(7);
+        assert_ne!(new.index1, middle.index1);
+        assert_eq!(new.generation, 1);
+    }
+    assert!(arena.is_removed(middle));
+    assert_eq!(my_read(&arena, middle), had);
+}
+
+#[test]
 fn a_slot_that_reaches_the_last_generation_is_not_taken_again() {
     let mut arena = Arena::new();
     let a = arena.new_node(1);
@@ -488,7 +524,7 @@ fn sizes() {
     assert_eq!(size_of::<Option<crate::Node>>(), 8);
     assert_eq!(size_of::<crate::NodeEdge>(), 12);
     assert_eq!(size_of::<NodeEdge>(), 12);
-    assert_eq!(size_of::<FreeSlot>(), 24);
+    assert_eq!(size_of::<FreeSlot>(), 28);
     println!(
         "Value {} bytes, SlotData<Value> {}, Slot<Value> {}",
         size_of::<Value>(),
