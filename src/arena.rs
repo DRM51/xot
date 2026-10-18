@@ -98,8 +98,45 @@
 //! involved are not removed and agree with each other, these steps change
 //! only a few fields, and the operations change those directly; see "Fast
 //! paths" below.
+//!
+//! # Kept trees
+//!
+//! A parse makes the nodes of a document one after another, in document
+//! order, and frees no slot. When no slot is free as it starts, its nodes
+//! take new slots, so that the tree sits in consecutive slots in document
+//! order. The arena keeps such a tree ([`Arena::keep_parsed`]) when it
+//! begins right after the trees it keeps already, or when it keeps none, so
+//! that the kept trees form one run of slots without a gap, from `kept_lo`
+//! to `kept_hi`. The invariant: while a tree is kept, its slots
+//! hold exactly the nodes of its parse, each with the generation 0, none is
+//! free, and their fields refer only to each other, as the parse linked
+//! them.
+//!
+//! Every operation that changes fields of slots names a node in the place
+//! it changes: `detach` the node it takes out, whose parent and siblings
+//! are in its tree; the appends, the prepend and the inserts the node they
+//! move, whose old place is in its tree, and the parent or the sibling of
+//! its new place; `remove` and `remove_subtree` the node they remove, whose
+//! relatives are in its tree. Freeing a slot is part of a removal. As the
+//! last step of each of these operations, when it changed something,
+//! [`Arena::watch`] or [`Arena::watch2`] compares the positions of the
+//! nodes it names with the run, and drops the tree of each that is in the
+//! run: by the invariant no other tree can be affected, and as the run has
+//! no gap, the comparison is exact. Dropping a tree that is not the first
+//! kept tree also drops the trees after it, which keeps the run without a
+//! gap. [`Arena::append_fresh`] attaches a new node without a check; only
+//! the parser, before it keeps the tree, and copies that are not kept use
+//! it, and debug assertions check that its parent is in no kept tree.
+//! Changes of the data in the slots change no structure and keep the trees.
+//!
+//! Each operation that changes the structure is a thin wrapper: it calls
+//! the operation itself, which does not look at the kept trees and is
+//! compiled as it was without them, then `watch` or `watch2` when the
+//! operation changed something.
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU32, NonZeroUsize};
+
+use crate::parsedtree::ParsedTree;
 
 /// The number of slots in a chunk is 2^`CHUNK_BITS`.
 const CHUNK_BITS: u32 = 16;
@@ -140,6 +177,27 @@ impl Hash for NodeId {
 }
 
 impl NodeId {
+    /// The position plus one of the slot of the node.
+    #[inline(always)]
+    pub(crate) fn index1(self) -> u32 {
+        self.index1.get()
+    }
+
+    /// The generation of the node.
+    #[inline(always)]
+    pub(crate) fn generation(self) -> u32 {
+        self.generation
+    }
+
+    /// The handle of the first node in the slot at `index1`.
+    #[inline(always)]
+    pub(crate) fn first_in(index1: NonZeroU32) -> Self {
+        NodeId {
+            index1,
+            generation: 0,
+        }
+    }
+
     /// The handle with the position of `node_id` and the generation 0.
     ///
     /// Panics if the position does not fit in a `u32`.
@@ -323,7 +381,13 @@ enum ConsistencyError {
 }
 
 /// The node storage: nodes with data of type `T`, linked into trees.
+///
+/// The fields stay in the order declared, so that the ones that every
+/// operation reads, from `chunks` to `kept_hi`, share a cache line, and the
+/// lists of `kept`, which only a parse and a change of a kept tree use, come
+/// after them.
 #[derive(Debug)]
+#[repr(C)]
 pub(crate) struct Arena<T> {
     /// The slots: the one at position `p` is
     /// `chunks[p >> CHUNK_BITS][p & CHUNK_MASK]`.
@@ -336,6 +400,28 @@ pub(crate) struct Arena<T> {
     /// The position plus one of the last slot of the free list, 0 when it is
     /// empty.
     last_free: u32,
+    /// The first position plus one of the first kept tree, 0 when no tree
+    /// is kept (see "Kept trees" in the module documentation).
+    kept_lo: u32,
+    /// The last position plus one of the last kept tree; 0
+    /// when no tree is kept.
+    kept_hi: u32,
+    /// The kept trees, and the trees no longer kept.
+    kept: KeptTrees,
+}
+
+/// The trees that a parse put in consecutive new slots and whose structure
+/// has not changed since, and those that are no longer kept.
+#[derive(Debug, Clone, Default)]
+struct KeptTrees {
+    /// The kept trees are `trees[start..]`, by position, each one beginning
+    /// in the slot right after the last slot of the one before; the trees
+    /// before `start` are no longer kept and wait to be taken out.
+    trees: Vec<ParsedTree>,
+    /// The index in `trees` of the first kept tree.
+    start: usize,
+    /// Every tree that is no longer kept, in the order of the drops.
+    dropped: Vec<ParsedTree>,
 }
 
 impl<T: Clone> Clone for Arena<T> {
@@ -356,6 +442,9 @@ impl<T: Clone> Clone for Arena<T> {
             len: self.len,
             first_free: self.first_free,
             last_free: self.last_free,
+            kept_lo: self.kept_lo,
+            kept_hi: self.kept_hi,
+            kept: self.kept.clone(),
         }
     }
 }
@@ -368,6 +457,9 @@ impl<T> Arena<T> {
             len: 0,
             first_free: 0,
             last_free: 0,
+            kept_lo: 0,
+            kept_hi: 0,
+            kept: KeptTrees::default(),
         }
     }
 
@@ -383,6 +475,182 @@ impl<T> Arena<T> {
     fn slot_mut(&mut self, index1: u32) -> &mut Slot<T> {
         let (chunk, place) = place(index1);
         &mut self.chunks[chunk as usize][place]
+    }
+
+    // Kept trees (see the module documentation).
+
+    /// Whether the slot at `index1` belongs to a kept tree. The kept trees
+    /// form one run of slots without a gap, from `kept_lo` to `kept_hi`, so
+    /// two comparisons tell. With no tree kept, `kept_hi` is 0, and as
+    /// `index1` is not, this is never true.
+    #[inline(always)]
+    fn touches(&self, index1: u32) -> bool {
+        index1 <= self.kept_hi && self.kept_lo <= index1
+    }
+
+    /// The trees that are kept, by position.
+    #[inline(always)]
+    fn live_kept(&self) -> &[ParsedTree] {
+        &self.kept.trees[self.kept.start..]
+    }
+
+    /// The position plus one of the slot that the next new node takes, if
+    /// the nodes made from now on take new slots one after another and right
+    /// after the kept trees: no slot is free, and no node was made after
+    /// the last kept tree, if there is one. `None` otherwise, and when the
+    /// arena has `u32::MAX` slots.
+    pub(crate) fn fresh_start(&self) -> Option<NonZeroU32> {
+        if self.first_free != 0 {
+            return None;
+        }
+        if let Some(last) = self.live_kept().last() {
+            if last.last() != self.len {
+                return None;
+            }
+        }
+        NonZeroU32::new(self.len.checked_add(1)?)
+    }
+
+    /// Keep the nodes in the slots from `first`, which
+    /// [`Arena::fresh_start`] gave before they were made, to the last slot as
+    /// a tree in document order: a parse made them one after another, in
+    /// document order, and changed nothing else. The node at `first` is the
+    /// root of the tree.
+    pub(crate) fn keep_parsed(&mut self, first: NonZeroU32) {
+        let last = self.len;
+        debug_assert_eq!(self.first_free, 0, "a slot is free");
+        debug_assert!(first.get() <= last, "the tree has no node");
+        debug_assert!(
+            match self.live_kept().last() {
+                Some(tree) => tree.last() + 1 == first.get(),
+                None => true,
+            },
+            "the tree does not begin right after the kept trees"
+        );
+        debug_assert!(
+            {
+                let slot = self.slot(first.get());
+                !slot.is_free()
+                    && slot.generation == 0
+                    && slot.link[PARENT] == 0
+                    && slot.link[PREVIOUS] == 0
+                    && slot.link[NEXT] == 0
+            },
+            "the first node is not a root"
+        );
+        self.kept.trees.push(ParsedTree::new(first, last));
+        self.kept_bounds();
+    }
+
+    /// Set `kept_lo` and `kept_hi` from the kept trees.
+    fn kept_bounds(&mut self) {
+        let (lo, hi) = match (self.live_kept().first(), self.live_kept().last()) {
+            (Some(first), Some(last)) => (first.first(), last.last()),
+            _ => (0, 0),
+        };
+        self.kept_lo = lo;
+        self.kept_hi = hi;
+    }
+
+    /// The index in `kept.trees` of the kept tree with the slot at `index1`.
+    /// The first and the last kept tree, which a removal of documents in the
+    /// order of their parse and a change of the latest parse find, are tried
+    /// before a binary search.
+    #[inline]
+    fn find_kept(&self, index1: u32) -> Option<usize> {
+        let live = self.live_kept();
+        let (first, last) = (*live.first()?, *live.last()?);
+        if index1 <= first.last() {
+            return (first.first() <= index1).then_some(self.kept.start);
+        }
+        if last.first() <= index1 {
+            return (index1 <= last.last()).then_some(self.kept.start + live.len() - 1);
+        }
+        let k = live.partition_point(|tree| tree.first() <= index1) - 1;
+        if live[k].contains(index1) {
+            Some(self.kept.start + k)
+        } else {
+            None
+        }
+    }
+
+    /// The kept tree with the node of `node_id`, if there is one.
+    #[inline]
+    pub(crate) fn parsed_tree(&self, node_id: NodeId) -> Option<ParsedTree> {
+        let index1 = node_id.index1.get();
+        if node_id.generation != 0 || !self.touches(index1) {
+            return None;
+        }
+        self.find_kept(index1).map(|k| self.kept.trees[k])
+    }
+
+    /// The trees that are no longer kept, in the order in which they were
+    /// dropped.
+    #[inline]
+    pub(crate) fn dropped_parsed_trees(&self) -> &[ParsedTree] {
+        &self.kept.dropped
+    }
+
+    /// Drop the kept tree with the slot at `index1`, if there is one: the
+    /// first kept tree alone, or another one together with every kept tree
+    /// after it, so that the kept trees stay one run without a gap.
+    #[cold]
+    #[inline(never)]
+    fn drop_kept(&mut self, index1: u32) {
+        let Some(k) = self.find_kept(index1) else {
+            return;
+        };
+        let kept = &mut self.kept;
+        if k == kept.start {
+            kept.dropped.push(kept.trees[k]);
+            kept.start += 1;
+        } else {
+            kept.dropped.extend_from_slice(&kept.trees[k..]);
+            kept.trees.truncate(k);
+        }
+        if kept.start == kept.trees.len() {
+            kept.trees.clear();
+            kept.start = 0;
+        } else if kept.start >= 64 && 2 * kept.start >= kept.trees.len() {
+            kept.trees.drain(..kept.start);
+            kept.start = 0;
+        }
+        self.kept_bounds();
+    }
+
+    /// Drop the kept tree with the slot at `index1`, if there is one: the
+    /// last step of an operation that changed the structure around that
+    /// slot.
+    #[inline(always)]
+    fn watch(&mut self, index1: u32) {
+        if self.touches(index1) {
+            self.drop_kept(index1);
+        }
+    }
+
+    /// Whether `a` or `b` is not after the last kept slot: the one
+    /// comparison each that [`Arena::watch2`] makes for the nodes made after
+    /// the kept trees, which most changes involve.
+    #[inline(always)]
+    fn not_after_kept(&self, a: u32, b: u32) -> bool {
+        (a <= self.kept_hi) | (b <= self.kept_hi)
+    }
+
+    /// Drop the kept trees with the slots at `a` and at `b`, if there are
+    /// such trees.
+    #[inline(always)]
+    fn watch2(&mut self, a: u32, b: u32) {
+        if self.not_after_kept(a, b) && (self.touches(a) | self.touches(b)) {
+            self.drop_kept2(a, b);
+        }
+    }
+
+    /// [`Arena::drop_kept`] of `a`, then of `b`.
+    #[cold]
+    #[inline(never)]
+    fn drop_kept2(&mut self, a: u32, b: u32) {
+        self.drop_kept(a);
+        self.drop_kept(b);
     }
 
     /// The generation of the node that `link` refers to; it refers to one.
@@ -1101,7 +1369,25 @@ impl<T> Arena<T> {
 
     /// Unlink a node from its parent and its siblings. It keeps its
     /// descendants.
+    #[inline]
     pub(crate) fn detach(&mut self, node_id: NodeId) {
+        if self.detach_unwatched(node_id) {
+            self.watch(node_id.index1.get());
+        }
+    }
+
+    // The operations that change the structure are each a wrapper that
+    // calls the operation, which does not look at the kept trees, then
+    // `watch` or `watch2` when the operation changed something. The check
+    // then runs in the caller, after the operation has given its registers
+    // back, and the operation is compiled as it was without kept trees: a
+    // check inside the operation took more registers there and made each
+    // append about 1 ns slower.
+
+    /// [`Arena::detach`] without [`Arena::watch`]: whether it changed
+    /// something.
+    #[inline(never)]
+    fn detach_unwatched(&mut self, node_id: NodeId) -> bool {
         let n = node_id.index1.get();
         let slot = self.slot(n);
         let (free, parent, previous, next) = (
@@ -1113,17 +1399,18 @@ impl<T> Arena<T> {
         // a node without parent and siblings is detached already, and the
         // steps below would change nothing
         if parent == 0 && previous == 0 && next == 0 {
-            return;
+            return false;
         }
         if !free && self.is_simple_detach(n, parent, previous, next) {
             self.detach_simple(n, parent, previous, next);
-            return;
+            return true;
         }
         let node = Link::known(node_id);
         self.detach_from_siblings(node, node);
         self.rewrite_parents(node, Link::NONE)
             .expect("Should never happen: `None` as parent is always valid");
         debug_assert!(self.is_detached(node), "The node should be detached");
+        true
     }
 
     /// Some fields of the slot at `index1`: whether it is free, its parent,
@@ -1145,7 +1432,20 @@ impl<T> Arena<T> {
     /// Fails with `AppendSelf` if the two are the same node, then with
     /// `Removed` if either is removed, then with `AppendAncestor` if
     /// `new_child` is an ancestor of `parent`.
+    #[inline]
     pub(crate) fn checked_append(
+        &mut self,
+        parent: NodeId,
+        new_child: NodeId,
+    ) -> Result<(), indextree::NodeError> {
+        self.checked_append_unwatched(parent, new_child)?;
+        self.watch2(parent.index1.get(), new_child.index1.get());
+        Ok(())
+    }
+
+    /// [`Arena::checked_append`] without [`Arena::watch2`].
+    #[inline(never)]
+    fn checked_append_unwatched(
         &mut self,
         parent: NodeId,
         new_child: NodeId,
@@ -1210,6 +1510,10 @@ impl<T> Arena<T> {
             );
             assert_eq!(child_slot.link, [0; 5], "the new child is not a new node");
         }
+        debug_assert!(
+            self.parsed_tree(parent).is_none(),
+            "a node is added to a kept tree"
+        );
         let last = self.slot(p).link[LAST];
         self.insert_simple(c, p, last, 0);
     }
@@ -1221,7 +1525,20 @@ impl<T> Arena<T> {
     /// `new_child` is an ancestor of `parent`. It does not detach
     /// `new_child` first, so it panics if `new_child` is the first child of
     /// `parent` already.
+    #[inline]
     pub(crate) fn checked_prepend(
+        &mut self,
+        parent: NodeId,
+        new_child: NodeId,
+    ) -> Result<(), indextree::NodeError> {
+        self.checked_prepend_unwatched(parent, new_child)?;
+        self.watch2(parent.index1.get(), new_child.index1.get());
+        Ok(())
+    }
+
+    /// [`Arena::checked_prepend`] without [`Arena::watch2`].
+    #[inline(never)]
+    fn checked_prepend_unwatched(
         &mut self,
         parent: NodeId,
         new_child: NodeId,
@@ -1259,7 +1576,20 @@ impl<T> Arena<T> {
     ///
     /// Fails with `InsertAfterSelf` if the two are the same node, then with
     /// `Removed` if either is removed. Ancestors are not checked.
+    #[inline]
     pub(crate) fn checked_insert_after(
+        &mut self,
+        sibling: NodeId,
+        new_sibling: NodeId,
+    ) -> Result<(), indextree::NodeError> {
+        self.checked_insert_after_unwatched(sibling, new_sibling)?;
+        self.watch2(sibling.index1.get(), new_sibling.index1.get());
+        Ok(())
+    }
+
+    /// [`Arena::checked_insert_after`] without [`Arena::watch2`].
+    #[inline(never)]
+    fn checked_insert_after_unwatched(
         &mut self,
         sibling: NodeId,
         new_sibling: NodeId,
@@ -1296,7 +1626,20 @@ impl<T> Arena<T> {
     ///
     /// Fails with `InsertBeforeSelf` if the two are the same node, then with
     /// `Removed` if either is removed. Ancestors are not checked.
+    #[inline]
     pub(crate) fn checked_insert_before(
+        &mut self,
+        sibling: NodeId,
+        new_sibling: NodeId,
+    ) -> Result<(), indextree::NodeError> {
+        self.checked_insert_before_unwatched(sibling, new_sibling)?;
+        self.watch2(sibling.index1.get(), new_sibling.index1.get());
+        Ok(())
+    }
+
+    /// [`Arena::checked_insert_before`] without [`Arena::watch2`].
+    #[inline(never)]
+    fn checked_insert_before_unwatched(
         &mut self,
         sibling: NodeId,
         new_sibling: NodeId,
@@ -1331,7 +1674,15 @@ impl<T> Arena<T> {
 
     /// Remove a node: its children take its place among its siblings, and it
     /// is left without parent, children or siblings.
+    #[inline]
     pub(crate) fn remove(&mut self, node_id: NodeId) {
+        self.remove_unwatched(node_id);
+        self.watch(node_id.index1.get());
+    }
+
+    /// [`Arena::remove`] without its last [`Arena::watch`].
+    #[inline(never)]
+    fn remove_unwatched(&mut self, node_id: NodeId) {
         let node = Link::known(node_id);
         let (parent, previous_sibling, next_sibling, first_child, last_child) = {
             let slot = self.slot(node.index1);
@@ -1370,7 +1721,15 @@ impl<T> Arena<T> {
     /// its descendants are removed in document order. The removed
     /// descendants keep their parent, children and siblings, and the node
     /// its first and last child.
+    #[inline]
     pub(crate) fn remove_subtree(&mut self, node_id: NodeId) {
+        self.remove_subtree_unwatched(node_id);
+        self.watch(node_id.index1.get());
+    }
+
+    /// [`Arena::remove_subtree`] without its last [`Arena::watch`].
+    #[inline(never)]
+    fn remove_subtree_unwatched(&mut self, node_id: NodeId) {
         self.detach(node_id);
         // a preorder traversal, by position: the first child, else the next
         // sibling, else the next sibling of the nearest ancestor that has

@@ -92,6 +92,24 @@
   to an element with `extend` takes 0.3 to 0.5 times as long as adding them
   one at a time with `insert`, and 56 namespaces 0.2 times as long.
 
+- `Xot::parsed_tree` tells whether a node is in a tree that a parse put in
+  storage in document order and whose structure has not changed since, and
+  gives that tree as a `ParsedTree`. `ParsedTree::index` is the place of a
+  node in document order (the order of `Xot::all_descendants` of the
+  document node, namespace and attribute nodes included), `ParsedTree::node`
+  the node at a place, `ParsedTree::root` the document node and
+  `ParsedTree::node_count` the number of nodes; these are arithmetic on the
+  `Node`, so that the nodes of such a tree can be put in document order
+  without a walk of the tree. A `Xot` keeps the tree of a parse that
+  succeeds when the parse puts its nodes in new slots right after the trees
+  it keeps already: no slot of a removed node is free when the parse
+  starts, and no node was made after the last kept tree. It drops a tree
+  when its structure changes: a node of it is moved, detached or removed,
+  or a node is added to it. A change of a value keeps the tree, and so does
+  a text that joins a text of the tree. `Xot::dropped_parsed_trees` lists
+  the trees no longer kept, in the order of the drops; a dropped tree is
+  never kept again.
+
 ### Bugs fixed
 
 - `NameId`, `PrefixId` and `NamespaceId` were 16 bits, and a `Xot` that had
@@ -543,6 +561,33 @@
 
 - A panic that takes a cycle made with `insert_after` or `insert_before`,
   then `element_unwrap` of a node in it, has another message.
+
+- The debug text of a `Xot` shows the parsed trees it keeps and those it
+  dropped.
+
+- Each operation that changes the structure (`append` and the other
+  appends, `prepend`, `insert_before`, `insert_after`, `detach`, `remove`
+  and the operations made of them) compares the positions of the nodes it
+  changes with the kept parsed trees after the change. With the kept tree
+  of a generated document of 25 megabytes with 2.0M nodes, making an
+  element and appending it to an element takes 23.4 ns instead of 23.2 ns,
+  inserting it before or after a sibling 23.2 to 23.5 ns instead of 22.5
+  ns, and adding a namespace node 21.5 ns instead of 20.8 ns. Adding the
+  first attribute to an element takes 23.2 ns instead of 21.5 ns, as long
+  as in a control copy without the comparison, so that this difference
+  comes from where the code lands rather than from the comparison. With a
+  small kept tree, 2,000,000 appends to 1,000 elements in turn take 16.5
+  to 17.1 ns each instead of 16.3 to 16.7 ns. Removing 200,000 small
+  parsed documents one after another takes 31 to 33 ns a document instead
+  of 28 ns. Parsing takes as long as before; the first parse into a new
+  `Xot` makes one more allocation.
+
+- A change of a kept parsed tree that is not the first tree the `Xot`
+  keeps also drops the trees parsed after it, so that the kept trees stay
+  side by side in storage.
+
+- `Xot::dropped_parsed_trees` grows by one entry of 8 bytes for each
+  dropped tree.
 
 ## [0.31.2] - 2025-04-09
 

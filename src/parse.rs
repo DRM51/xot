@@ -933,6 +933,7 @@ impl Xot {
         xml: &str,
         recorder: &mut R,
     ) -> Result<Node, ParseError> {
+        let fresh = self.arena.fresh_start();
         let builder = self._parse(tokenizer, xml, recorder)?;
         // we expect both a document as the current node (everything else being
         // closed) *and* the content of this node containing a single element
@@ -961,6 +962,7 @@ impl Xot {
             }
             self.id_nodes_map
                 .insert(document_node.get(), builder.id_nodes);
+            self.keep_parsed(fresh, document_node);
             Ok(document_node)
         } else {
             let current_node = Node::new(builder.current_node_id);
@@ -1003,11 +1005,13 @@ impl Xot {
         recorder: &mut R,
     ) -> Result<Node, ParseError> {
         let tokenizer = Tokenizer::from_fragment(xml, 0..xml.len());
+        let fresh = self.arena.fresh_start();
         let builder = self._parse(tokenizer, xml, recorder)?;
         if builder.is_current_node_document(self) {
             let document_node = Node::new(builder.tree);
             self.id_nodes_map
                 .insert(document_node.get(), builder.id_nodes);
+            self.keep_parsed(fresh, document_node);
             Ok(document_node)
         } else {
             let current_node = Node::new(builder.current_node_id);
@@ -1016,6 +1020,19 @@ impl Xot {
             Err(ParseError::UnclosedTag(
                 recorder.unclosed_element(current_node),
             ))
+        }
+    }
+
+    /// Keep the tree of `document_node`, which a parse just made and checked,
+    /// if `fresh`, which `Arena::fresh_start` gave before the parse, says
+    /// that its nodes took new slots one after another, right after the kept
+    /// trees (see [`Xot::parsed_tree`]).
+    #[inline]
+    fn keep_parsed(&mut self, fresh: Option<std::num::NonZeroU32>, document_node: Node) {
+        if let Some(first) = fresh {
+            debug_assert_eq!(first.get(), document_node.get().index1());
+            debug_assert!(matches!(self.value(document_node), Value::Document));
+            self.arena.keep_parsed(first);
         }
     }
 

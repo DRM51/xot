@@ -18,6 +18,17 @@
 //! nodes form a cycle, which `insert_after` and `insert_before` can make (they
 //! do not check ancestors), as later walks up and along such a tree would not
 //! end.
+//!
+//! The oracle also checks the kept trees. A `Parse` step makes a small tree
+//! in preorder, one node after another, as the parser does, and keeps it
+//! when [`Arena::fresh_start`] allows, unless it plays a failed parse. A
+//! replica of the kept and the dropped trees follows the rules of the module
+//! documentation: a step that succeeds drops the trees of the nodes it
+//! names, in the order in which the arena looks at them. After every step
+//! the oracle requires the kept and dropped trees of the replica; for each
+//! kept tree, that indextree finds its slots, all with the generation 0, in
+//! the preorder of its root, which has no parent; `kept_lo` and `kept_hi`
+//! exactly around them without a gap; and `parsed_tree` of every handle.
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe, RefUnwindSafe, UnwindSafe};
 
@@ -1230,6 +1241,7 @@ enum Op {
     Detach,
     Remove,
     RemoveSubtree,
+    Parse,
 }
 
 /// The result of an operation: `Err` for a panic with its message, then
@@ -1250,6 +1262,12 @@ struct Sequence {
     /// The index in `pairs` of the last handle made for each slot.
     latest: Vec<usize>,
     value: u32,
+    /// The replica of the kept trees, as positions plus one of their first
+    /// and last slots, by position.
+    kept: Vec<(u32, u32)>,
+    /// The replica of the trees no longer kept, in the order in which they
+    /// stopped being kept.
+    dropped: Vec<(u32, u32)>,
 }
 
 /// Counts of a run of the oracle.
@@ -1260,6 +1278,9 @@ struct Tally {
     errors: usize,
     panics: usize,
     cycles: usize,
+    /// Trees kept, and dropped.
+    kept: usize,
+    dropped: usize,
 }
 
 impl Tally {
@@ -1276,7 +1297,156 @@ impl Sequence {
             pairs: Vec::new(),
             latest: Vec::new(),
             value: 0,
+            kept: Vec::new(),
+            dropped: Vec::new(),
         }
+    }
+
+    /// A tree of up to 8 nodes made in preorder, one node after another, as
+    /// the parser makes it: each new node is appended to a node on the path
+    /// from the root to the node made last. It is kept as a parse keeps its
+    /// tree, unless the step plays a failed parse.
+    fn parse(&mut self, rng: &mut Rng, tally: &mut Tally) -> Result<(), String> {
+        // the replica: no slot is free, and the kept trees end at the last slot
+        let free = self.it.as_slice().iter().any(|node| node.is_removed());
+        let len = self.it.count() as u32;
+        let fresh = !free
+            && match self.kept.last() {
+                Some(&(_, last)) => last == len,
+                None => true,
+            };
+        let start = self.my.fresh_start();
+        if start.map(NonZeroU32::get) != fresh.then_some(len + 1) {
+            return Err(format!("fresh_start {start:?}, replica {fresh}"));
+        }
+        let size = 1 + rng.below(8);
+        let mut path: Vec<Pair> = Vec::new();
+        for _ in 0..size {
+            self.new_node()?;
+            let pair = *self.pairs.last().unwrap();
+            if !path.is_empty() {
+                path.truncate(1 + rng.below(path.len()));
+                let parent = *path.last().unwrap();
+                parent
+                    .it
+                    .checked_append(pair.it, &mut self.it)
+                    .map_err(|e| e.to_string())?;
+                self.my.append_fresh(parent.my, pair.my);
+            }
+            path.push(pair);
+        }
+        let failed = rng.chance(15);
+        if let (Some(first), false) = (start, failed) {
+            self.my.keep_parsed(first);
+            self.kept.push((first.get(), self.my.len));
+            tally.kept += 1;
+        }
+        Ok(())
+    }
+
+    /// Drop the tree of the replica with the slot at `index1`, if there is
+    /// one: the first alone, another one with every tree after it.
+    fn replica_drop(&mut self, index1: u32, tally: &mut Tally) {
+        let Some(k) = self
+            .kept
+            .iter()
+            .position(|&(first, last)| first <= index1 && index1 <= last)
+        else {
+            return;
+        };
+        let end = if k == 0 { 1 } else { self.kept.len() };
+        tally.dropped += end - k;
+        self.dropped.extend(self.kept.drain(k..end));
+    }
+
+    /// Compare the kept and dropped trees with the replica, and check the
+    /// trees of the replica against indextree.
+    fn compare_kept(&self) -> Result<(), String> {
+        let as_pairs = |trees: &[ParsedTree]| -> Vec<(u32, u32)> {
+            trees
+                .iter()
+                .map(|tree| (tree.first(), tree.last()))
+                .collect()
+        };
+        if as_pairs(self.my.live_kept()) != self.kept {
+            return Err(format!(
+                "kept {:?} against the replica {:?}",
+                as_pairs(self.my.live_kept()),
+                self.kept
+            ));
+        }
+        if as_pairs(self.my.dropped_parsed_trees()) != self.dropped {
+            return Err(format!(
+                "dropped {:?} against the replica {:?}",
+                as_pairs(self.my.dropped_parsed_trees()),
+                self.dropped
+            ));
+        }
+        let (lo, hi) = match (self.kept.first(), self.kept.last()) {
+            (Some(&(first, _)), Some(&(_, last))) => (first, last),
+            _ => (0, 0),
+        };
+        if (self.my.kept_lo, self.my.kept_hi) != (lo, hi) {
+            return Err(format!(
+                "kept_lo and kept_hi {:?} against {:?}",
+                (self.my.kept_lo, self.my.kept_hi),
+                (lo, hi)
+            ));
+        }
+        for pair in self.kept.windows(2) {
+            if pair[1].0 != pair[0].1 + 1 {
+                return Err(format!("a gap between the kept trees {pair:?}"));
+            }
+        }
+        for &(first, last) in &self.kept {
+            let root = self.it.as_slice()[first as usize - 1].parent();
+            if root.is_some() {
+                return Err(format!("the root of the kept tree {first} has a parent"));
+            }
+            let root = self
+                .pairs
+                .iter()
+                .find(|pair| it_key(pair.it) == (first, 0))
+                .ok_or_else(|| format!("no handle for the root of the kept tree {first}"))?;
+            if self.it[root.it].is_removed() {
+                return Err(format!("the root of the kept tree {first} is removed"));
+            }
+            let preorder = it_keys(root.it.descendants(&self.it).take(last as usize + 1));
+            let expected: Vec<(u32, u32)> = (first..=last).map(|index1| (index1, 0)).collect();
+            if preorder != expected {
+                return Err(format!(
+                    "the kept tree {first}..={last} has the preorder {preorder:?}"
+                ));
+            }
+        }
+        for index1 in 1..=self.my.len {
+            let kept = self
+                .kept
+                .iter()
+                .any(|&(first, last)| first <= index1 && index1 <= last);
+            if self.my.touches(index1) != kept {
+                return Err(format!("touches({index1}) is not {kept}"));
+            }
+        }
+        for pair in &self.pairs {
+            let (index1, generation) = my_key(pair.my);
+            let expected = self
+                .kept
+                .iter()
+                .find(|&&(first, last)| generation == 0 && first <= index1 && index1 <= last)
+                .map(|&(first, last)| (first, last));
+            let got = self
+                .my
+                .parsed_tree(pair.my)
+                .map(|tree| (tree.first(), tree.last()));
+            if got != expected {
+                return Err(format!(
+                    "parsed_tree of {:?}: {got:?} against {expected:?}",
+                    pair.my
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// The pairs of nodes that are not removed, and of removed nodes whose
@@ -1317,7 +1487,7 @@ impl Sequence {
         let my = &mut self.my;
         let error = |e: indextree::NodeError| e.to_string();
         match op {
-            Op::New => unreachable!(),
+            Op::New | Op::Parse => unreachable!(),
             Op::Append => (
                 catch(|| x.it.checked_append(y.it, it).map_err(error)),
                 catch(|| my.checked_append(x.my, y.my).map_err(error)),
@@ -1537,9 +1707,10 @@ fn sequence(seed: u64, steps: usize, all_reads: bool, tally: &mut Tally) -> Resu
     // some sequences remove and make many nodes, so that slots are taken
     // again and again
     let churn = rng.chance(30);
-    let weights: [(Op, usize); 8] = if churn {
+    let weights: [(Op, usize); 9] = if churn {
         [
-            (Op::New, 34),
+            (Op::New, 28),
+            (Op::Parse, 6),
             (Op::Append, 16),
             (Op::Prepend, 6),
             (Op::InsertAfter, 6),
@@ -1550,7 +1721,8 @@ fn sequence(seed: u64, steps: usize, all_reads: bool, tally: &mut Tally) -> Resu
         ]
     } else {
         [
-            (Op::New, 24),
+            (Op::New, 18),
+            (Op::Parse, 6),
             (Op::Append, 22),
             (Op::Prepend, 10),
             (Op::InsertAfter, 10),
@@ -1579,6 +1751,8 @@ fn sequence(seed: u64, steps: usize, all_reads: bool, tally: &mut Tally) -> Resu
         let context = |message: String| format!("seed {seed}, step {step}, {op:?}: {message}");
         if op == Op::New {
             s.new_node().map_err(context)?;
+        } else if op == Op::Parse {
+            s.parse(&mut rng, tally).map_err(context)?;
         } else {
             // a live node, or for the checked operations sometimes a removed
             // one, and sometimes the same node twice
@@ -1595,6 +1769,13 @@ fn sequence(seed: u64, steps: usize, all_reads: bool, tally: &mut Tally) -> Resu
             };
             let x = pick(&mut rng);
             let y = if rng.chance(5) { x } else { pick(&mut rng) };
+            let detached = |pair: Pair| {
+                let node = &s.it[pair.it];
+                node.parent().is_none()
+                    && node.previous_sibling().is_none()
+                    && node.next_sibling().is_none()
+            };
+            let (x_detached, y_detached) = (detached(x), detached(y));
             let (a, b) = s.apply(op, x, y);
             if a != b {
                 return Err(context(format!(
@@ -1608,9 +1789,31 @@ fn sequence(seed: u64, steps: usize, all_reads: bool, tally: &mut Tally) -> Resu
                     return Ok(());
                 }
                 Ok(Err(_)) => tally.errors += 1,
-                Ok(Ok(())) => {}
+                Ok(Ok(())) => {
+                    // the nodes that the arena looks at, in its order: the
+                    // node that `detach` takes out, when it is not detached
+                    // already (the appends and the inserts after and before
+                    // detach the node they move first), then the nodes that
+                    // the operation names
+                    let (x_at, y_at) = (my_key(x.my).0, my_key(y.my).0);
+                    let looked_at: Vec<u32> = match op {
+                        Op::Append | Op::InsertAfter | Op::InsertBefore if !y_detached => {
+                            vec![y_at, x_at, y_at]
+                        }
+                        Op::Append | Op::InsertAfter | Op::InsertBefore | Op::Prepend => {
+                            vec![x_at, y_at]
+                        }
+                        Op::Detach if x_detached => vec![],
+                        Op::Detach | Op::Remove | Op::RemoveSubtree => vec![x_at],
+                        Op::New | Op::Parse => unreachable!(),
+                    };
+                    for index1 in looked_at {
+                        s.replica_drop(index1, tally);
+                    }
+                }
             }
         }
+        s.compare_kept().map_err(context)?;
         s.compare_slots().map_err(context)?;
         if s.has_cycle() {
             tally.cycles += 1;
@@ -1631,11 +1834,12 @@ fn oracle_against_indextree() {
     }
     // the sequences reach every operation, errors, panics and cycles
     assert_eq!(tally.sequences, 1000);
-    assert_eq!(tally.operations.len(), 8, "{tally:?}");
+    assert_eq!(tally.operations.len(), 9, "{tally:?}");
     assert!(
         tally.errors > 0 && tally.panics > 0 && tally.cycles > 0,
         "{tally:?}"
     );
+    assert!(tally.kept > 0 && tally.dropped > 0, "{tally:?}");
     assert!(tally.steps() > 20_000, "{tally:?}");
 }
 
@@ -1653,5 +1857,6 @@ fn oracle_soak() {
         }
         seed += 1;
     }
+    assert!(tally.kept > 0 && tally.dropped > 0, "{tally:?}");
     println!("oracle soak: {tally:?}, {} operations", tally.steps());
 }
