@@ -589,10 +589,11 @@
 
 - The XML serializer keeps the namespace declarations in scope in one list
   that it changes as elements open and close: an element that declares
-  namespaces takes the entries for the prefixes it declares out of the list
-  and appends its declarations, and its end puts the list back as it was.
-  It copied the list of the namespaces in scope for each element that
-  declares namespaces. The prefixes it uses, including for two declarations
+  namespaces appends its declarations and takes the entries for the
+  prefixes it declares out of the list in one pass, from the first of them,
+  and its end puts the list back as it was in one pass. It copied the
+  list of the namespaces in scope for each element that declares
+  namespaces. The prefixes it uses, including for two declarations
   of one prefix on one element and for names whose namespace has several
   prefixes in scope, are the same as before, and so are the output and the
   errors. On a generated document with 640,017 nodes in which 160,000
@@ -605,8 +606,15 @@
   namespaces once, the serialization takes 95.2 ms instead of 565.7 ms
   (0.17, it was 0.18). A lookup reads only declarations in scope, as
   before: 20,000 nested elements that each declare the same prefix again
-  take 2.1 ms instead of 9.7 ms, and 100 elements below a root that
-  declares 5,000 prefixes for one namespace 0.67 ms instead of 1.35 ms.
+  take 2.3 ms instead of 9.7 ms, and 100 elements below a root that
+  declares 5,000 prefixes for one namespace 0.66 ms instead of 1.38 ms.
+  An element that declares again many of the prefixes in scope costs one
+  pass over the list, which is no more than the copy of before: below a
+  root that declares 1,000 prefixes, 500 elements that each declare all of
+  them again take 23.2 ms instead of 160.7 ms (0.15, the same with all of
+  them for one namespace), and below a root that declares 500, 5,000
+  elements that each declare the first 50 of them again 18.6 ms instead of
+  90.8 ms (0.21).
 
 - The HTML 5 serializer renders each token into one string that it clears
   and uses again, as the XML serializer does, writes prefixed names in pieces

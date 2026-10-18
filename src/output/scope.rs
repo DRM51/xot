@@ -8,18 +8,21 @@
 //! without the entries whose prefix this element declares, followed by the
 //! declarations of this element (two declarations of one prefix on one
 //! element both stay). `NameScope` keeps only the list of the innermost
-//! such element. When an element declares namespaces, it takes the entries
-//! whose prefix the element declares out of the list, notes each with its
-//! place, and appends the declarations; at the end of the element it cuts
-//! them off and puts the entries it took out back in their places. A lookup
-//! reads the list from the last entry to the first, as a copied list is
-//! read.
+//! such element. When an element declares namespaces, it appends the
+//! declarations, then takes the entries before them whose prefix the
+//! element declares out of the list in one pass, noting each with its
+//! place; at the end of the element it cuts the declarations off and puts
+//! the noted entries back in one pass from the end. A lookup reads the list
+//! from the last entry to the first, as a copied list is read.
 //!
-//! The list holds only entries in scope, so a lookup and a change cost no
-//! more than in a copied list, however deep the elements are and however
-//! many prefixes are declared. A count of the entries for each prefix tells
-//! whether a declaration takes anything out of scope, so a declaration of a
-//! prefix that is not in scope yet costs no search.
+//! The list holds only entries in scope, so a lookup costs no more than in a
+//! copied list, however deep the elements are. A count of the entries for
+//! each prefix tells whether a declaration takes anything out of scope. An
+//! element that declares only prefixes that are not in scope yet costs one
+//! count update per declaration. An element that takes entries out costs,
+//! besides that, one pass over the list from the first entry it takes out,
+//! however many prefixes it declares again: at most the order of the
+//! copy of the list that `FullnameSerializer` makes for it.
 
 use std::collections::BTreeMap;
 
@@ -124,42 +127,71 @@ impl NameScope {
         &mut self,
         declarations: impl Iterator<Item = (PrefixId, NamespaceId)>,
     ) -> bool {
-        let taken = self.taken.len();
-        // where the declarations of this element begin; taking an entry out
-        // moves them one place to the front
-        let mut start = self.entries.len();
+        let start = self.entries.len();
+        // the number of entries before this element whose prefix it declares
+        let mut shadowed = 0usize;
         for (prefix, namespace) in declarations {
-            if start == self.entries.len() && self.base_popped {
+            if self.entries.len() == start && self.base_popped {
                 panic!("{}", BASE_POPPED);
             }
+            // Until the counts are updated below, they count only the
+            // entries before this element. The count of a prefix that is in
+            // scope goes to 0 here, so that a second declaration of it does
+            // not count those entries again, and so that `take_out` can tell
+            // them: every other entry before `start` has a count above 0.
             let count = self.count(prefix);
             if count > 0 {
-                // the entries for the prefix before this element stay
-                // in scope no longer; a declaration of this element stays
-                let own = self.entries[start..]
-                    .iter()
-                    .filter(|(p, _)| *p == prefix)
-                    .count() as u32;
-                let mut left = count - own;
-                let mut index = start;
-                while left > 0 {
-                    index -= 1;
-                    if self.entries[index].0 == prefix {
-                        let entry = self.entries.remove(index);
-                        self.taken.push((index, entry));
-                        start -= 1;
-                        left -= 1;
-                    }
-                }
-                self.set_count(prefix, own);
+                shadowed += count as usize;
+                self.set_count(prefix, 0);
             }
-            self.add((prefix, namespace));
+            self.entries.push((prefix, namespace));
         }
-        if start == self.entries.len() {
+        if self.entries.len() == start {
             return false;
         }
-        self.marks.push((start, taken));
+        let taken = self.taken.len();
+        let own = if shadowed > 0 {
+            self.take_out(start, shadowed)
+        } else {
+            start
+        };
+        for index in own..self.entries.len() {
+            let prefix = self.entries[index].0;
+            let count = self.count(prefix);
+            self.set_count(prefix, count + 1);
+        }
+        self.marks.push((own, taken));
         true
+    }
+
+    /// Take the `shadowed` entries before `start` whose prefix has a count of
+    /// 0 out of the list, noting each with its place in `taken`, in the order
+    /// of the list. Returns where the entries from `start` on begin then.
+    ///
+    /// It looks from `start` to the front for the first of them, since a
+    /// prefix declared again was most often declared by a near ancestor, and
+    /// then moves the entries from there on in one pass.
+    fn take_out(&mut self, start: usize, shadowed: usize) -> usize {
+        let mut left = shadowed;
+        let mut first = start;
+        while left > 0 {
+            first -= 1;
+            if self.count(self.entries[first].0) == 0 {
+                left -= 1;
+            }
+        }
+        let mut kept = first;
+        for index in first..start {
+            let entry = self.entries[index];
+            if self.count(entry.0) == 0 {
+                self.taken.push((index, entry));
+            } else {
+                self.entries[kept] = entry;
+                kept += 1;
+            }
+        }
+        self.entries.drain(kept..start);
+        kept
     }
 
     /// Remove the declarations that the last [`push`](NameScope::push) that
@@ -182,12 +214,30 @@ impl NameScope {
             let count = self.count(prefix);
             self.set_count(prefix, count - 1);
         }
+        if self.taken.len() > taken {
+            self.put_back(taken);
+        }
+    }
+
+    /// Put the entries of `taken` from `taken` on back in their places, from
+    /// the last to the first, moving each entry between them once.
+    fn put_back(&mut self, taken: usize) {
+        let mut read = self.entries.len();
+        let mut end = read + (self.taken.len() - taken);
+        self.entries.resize(end, (self.empty, self.no_namespace));
         while self.taken.len() > taken {
             let (index, entry) = self.taken.pop().unwrap();
-            self.entries.insert(index, entry);
+            // the entries that go between this one and the one put back
+            // before it
+            let after = end - index - 1;
+            self.entries.copy_within(read - after..read, index + 1);
+            read -= after;
+            self.entries[index] = entry;
+            end = index;
             let count = self.count(entry.0);
             self.set_count(entry.0, count + 1);
         }
+        debug_assert_eq!(read, end);
     }
 
     /// Add the empty prefix for `namespace` after the last entry, as
@@ -714,6 +764,93 @@ mod tests {
         }
         assert_eq!(scope.entries, base);
         check_counts(&scope);
+    }
+
+    // nested elements that each declare again many prefixes of a wide scope,
+    // in the order of the list, in reverse, every few, twice on one element
+    // and mixed with new prefixes, on both sides of DENSE_PREFIXES
+    #[test]
+    fn test_wide_redeclaration() {
+        let mut xot = Xot::new();
+        let namespaces: Vec<_> = (0..4)
+            .map(|i| xot.add_namespace(&format!("urn:{}", i)))
+            .collect();
+        let names: Vec<_> = namespaces
+            .iter()
+            .map(|ns| xot.add_name_ns("a", *ns))
+            .collect();
+        let prefixes: Vec<_> = (0..4200)
+            .map(|i| xot.add_prefix(&format!("p{}", i)))
+            .collect();
+        let in_scope = |i: usize| (prefixes[4200 - 1000 + i], namespaces[i % 3]);
+        let base: Vec<_> = (0..1000).map(in_scope).collect();
+        let mut expected = FullnameSerializer::new(&xot, base.clone());
+        let mut scope = NameScope::new(&xot, &base);
+        let shapes: Vec<Vec<(PrefixId, NamespaceId)>> = vec![
+            (0..1000).map(|i| (in_scope(i).0, namespaces[3])).collect(),
+            (0..1000)
+                .rev()
+                .map(|i| (in_scope(i).0, namespaces[(i + 1) % 4]))
+                .collect(),
+            (0..1000)
+                .step_by(50)
+                .map(|i| (in_scope(i).0, namespaces[3]))
+                .collect(),
+            (0..1000)
+                .step_by(7)
+                .flat_map(|i| {
+                    [
+                        (in_scope(i).0, namespaces[3]),
+                        (prefixes[i], namespaces[1]),
+                        (in_scope(i).0, namespaces[2]),
+                    ]
+                })
+                .collect(),
+            vec![(xot.empty_prefix(), namespaces[0])],
+            (990..1000)
+                .map(|i| (in_scope(i).0, namespaces[0]))
+                .collect(),
+        ];
+        let compare = |scope: &NameScope, expected: &FullnameSerializer| {
+            check_counts(scope);
+            for name in &names {
+                assert_eq!(
+                    scope.element_prefix(&xot, *name).map_err(|e| e.to_string()),
+                    expected.element_prefix(*name).map_err(|e| e.to_string())
+                );
+                assert_eq!(
+                    scope
+                        .attribute_prefix(&xot, *name)
+                        .map_err(|e| e.to_string()),
+                    expected.attribute_prefix(*name).map_err(|e| e.to_string())
+                );
+            }
+        };
+        // the entries before each open push
+        let mut open = Vec::new();
+        for (step, k) in [0, 1, 2, 3, 2, 4, 5, 1, 0, 3, 5, 5, 4]
+            .into_iter()
+            .enumerate()
+        {
+            open.push(scope.entries.clone());
+            expected.push(shapes[k].clone());
+            assert!(scope.push(shapes[k].iter().copied()));
+            compare(&scope, &expected);
+            if step % 3 == 2 {
+                expected.pop(true);
+                scope.pop();
+                assert_eq!(scope.entries, open.pop().unwrap());
+                compare(&scope, &expected);
+            }
+        }
+        while let Some(entries) = open.pop() {
+            expected.pop(true);
+            scope.pop();
+            assert_eq!(scope.entries, entries);
+            compare(&scope, &expected);
+        }
+        assert_eq!(scope.entries, base);
+        assert!(scope.taken.is_empty());
     }
 
     #[test]
