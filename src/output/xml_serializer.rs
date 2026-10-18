@@ -11,14 +11,13 @@ use crate::xotdata::{Node, Xot, XMLNS_NAMESPACE};
 use crate::Value;
 
 use super::escape::{self, first_not_xml_char};
-use super::fullname::FullnameSerializer;
-use super::{output_walk, Output, Pretty, TokenSerializeParameters};
+use super::{output_walk, NameScope, Output, Pretty, TokenSerializeParameters};
 
 /// Renders the outputs of a node as XML text, one token at a time, into a
 /// string that the caller gives.
 pub(crate) struct XmlRenderer<'a, N: Normalizer> {
     xot: &'a Xot,
-    fullname_serializer: FullnameSerializer<'a>,
+    scope: NameScope,
     normalizer: N,
     parameters: TokenSerializeParameters,
     // for each open element: whether its start tag pushed namespace
@@ -33,11 +32,11 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
         parameters: TokenSerializeParameters,
         normalizer: N,
     ) -> Self {
-        let extra_declarations = xot.namespaces_in_scope(node).collect();
-        let fullname_serializer = FullnameSerializer::new(xot, extra_declarations);
+        let base = xot.namespaces_in_scope(node).collect::<Vec<_>>();
+        let scope = NameScope::new(xot, &base);
         Self {
             xot,
-            fullname_serializer,
+            scope,
             normalizer,
             parameters,
             open: Vec::new(),
@@ -70,10 +69,13 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
         use Output::*;
         match output {
             StartTagOpen(element) => {
-                let declarations = self.xot.namespace_declarations(node);
-                let pushed = !declarations.is_empty();
-                self.fullname_serializer.push(declarations);
-                let prefix = self.fullname_serializer.element_prefix(element.name())?;
+                let pushed = self.scope.push(
+                    self.xot
+                        .namespaces(node)
+                        .iter()
+                        .map(|(prefix, namespace)| (prefix, *namespace)),
+                );
+                let prefix = self.scope.element_prefix(self.xot, element.name())?;
                 self.open.push((pushed, prefix));
                 out.push('<');
                 self.push_name(out, prefix, element.name());
@@ -93,7 +95,7 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
                     // an end tag always follows its start tag in the walk
                     None => (
                         self.xot.has_namespace_declarations(node),
-                        self.fullname_serializer.element_prefix(element.name())?,
+                        self.scope.element_prefix(self.xot, element.name())?,
                     ),
                 };
                 // the namespaces in scope are those of the start tag
@@ -102,7 +104,9 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
                     self.push_name(out, prefix, element.name());
                     out.push('>');
                 }
-                self.fullname_serializer.pop(pushed);
+                if pushed {
+                    self.scope.pop();
+                }
                 Ok(false)
             }
             Prefix(prefix_id, namespace_id) => {
@@ -129,7 +133,7 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
                 Ok(true)
             }
             Attribute(name_id, value) => {
-                let prefix = self.fullname_serializer.attribute_prefix(*name_id)?;
+                let prefix = self.scope.attribute_prefix(self.xot, *name_id)?;
                 self.push_name(out, prefix, *name_id);
                 out.push_str("=\"");
                 let normalized = self.normalizer.normalize(Cow::Borrowed(*value));
@@ -222,11 +226,17 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
         };
         let place = match output {
             Output::Attribute(name_id, _) => {
-                let name = self
-                    .fullname_serializer
-                    .attribute_fullname(*name_id)
-                    .unwrap_or(Cow::Borrowed(self.xot.local_name_str(*name_id)));
-                format!("attribute \"{}\"", name)
+                let local_name = self.xot.local_name_str(*name_id);
+                match self.scope.attribute_prefix(self.xot, *name_id) {
+                    Ok(Some(prefix)) => {
+                        format!(
+                            "attribute \"{}:{}\"",
+                            self.xot.prefix_str(prefix),
+                            local_name
+                        )
+                    }
+                    _ => format!("attribute \"{}\"", local_name),
+                }
             }
             Output::Prefix(prefix_id, _) if *prefix_id == self.xot.empty_prefix_id => {
                 "namespace declaration \"xmlns\"".to_string()
@@ -450,6 +460,52 @@ mod tests {
             write_indentation(&mut w, level).unwrap();
             assert_eq!(w, " ".repeat(level * 2).as_bytes());
         }
+    }
+
+    // The walk of a node can go on after the node, and give the end tag of an
+    // element without its start tag. The namespaces in scope are then gone, as
+    // they were in the serializer with a list for each element.
+    #[test]
+    fn test_end_tag_without_start_tag() {
+        let mut xot = Xot::new();
+        let doc = xot
+            .parse(r#"<s:a xmlns:s="urn:s"><b/><s:c/></s:a>"#)
+            .unwrap();
+        let a = xot.document_element(doc).unwrap();
+        let b = xot.first_child(a).unwrap();
+        let c = xot.next_sibling(b).unwrap();
+        let mut renderer = XmlRenderer::new(
+            &xot,
+            b,
+            TokenSerializeParameters::default(),
+            crate::output::NoopNormalizer,
+        );
+        let element = |node| *xot.element(node).unwrap();
+        let mut token = |node, output: Output<'static>| {
+            let mut out = String::new();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                renderer.token(node, &output, &mut out, true).unwrap();
+            }))
+            .map(|_| out)
+            .map_err(|cause| cause.downcast_ref::<String>().cloned().unwrap_or_default())
+        };
+        assert_eq!(token(b, Output::StartTagOpen(element(b))).unwrap(), "<b");
+        assert_eq!(token(b, Output::StartTagClose).unwrap(), "/>");
+        assert_eq!(token(b, Output::EndTag(element(b))).unwrap(), "");
+        // the end tag of the parent, which has declarations
+        assert_eq!(token(a, Output::EndTag(element(a))).unwrap(), "</s:a>");
+        // a name in no namespace is still written
+        assert_eq!(token(b, Output::StartTagOpen(element(b))).unwrap(), "<b");
+        // a name in a namespace, and an element with declarations, are not
+        let message = "called `Option::unwrap()` on a `None` value";
+        assert_eq!(
+            token(c, Output::StartTagOpen(element(c))).unwrap_err(),
+            message
+        );
+        assert_eq!(
+            token(a, Output::StartTagOpen(element(a))).unwrap_err(),
+            message
+        );
     }
 
     #[test]
