@@ -657,18 +657,40 @@
 - Each operation that changes the structure (`append` and the other
   appends, `prepend`, `insert_before`, `insert_after`, `detach`, `remove`
   and the operations made of them) compares the positions of the nodes it
-  changes with the kept parsed trees after the change. With the kept tree
-  of a generated document of 25 megabytes with 2.0M nodes, making an
-  element and appending it to an element takes 23.4 ns instead of 23.2 ns,
-  inserting it before or after a sibling 23.2 to 23.5 ns instead of 22.5
-  ns, and adding a namespace node 21.5 ns instead of 20.8 ns. Adding the
-  first attribute to an element takes 23.2 ns instead of 21.5 ns, as long
-  as in a control copy without the comparison, so that this difference
-  comes from where the code lands rather than from the comparison. With a
-  small kept tree, 2,000,000 appends to 1,000 elements in turn take 16.5
-  to 17.1 ns each instead of 16.3 to 16.7 ns. Removing 200,000 small
-  parsed documents one after another takes 31 to 33 ns a document instead
-  of 28 ns. Parsing takes as long as before; the first parse into a new
+  changes with the kept parsed trees after the change. Measured with the
+  kept tree of a generated document of 25 megabytes with 2.0M nodes
+  (release, 41 interleaved rounds at load 6, where a second copy of the
+  program before the change read 0.997 to 1.024 on these lines; in
+  brackets the range over 4 more runs of 21 rounds at load 5 to 11),
+  each operation takes, per call, as a ratio of the time before:
+  making an element and appending it to an element 23.8 ns instead of 23.4
+  ns, 1.017 (1.008 to 1.017); appending a new text 0.994 (0.994 to 1.006);
+  appending a text that joins a text 0.997 (0.979 to 1.008); inserting an
+  element before a sibling 23.2 ns instead of 22.9 ns, 1.013 (0.975 to
+  1.009), and after it 23.5 ns instead of 22.8 ns, 1.031 (0.992 to 1.039);
+  prepending an element 27.2 ns instead of 26.8 ns, 1.015 (0.996 to
+  1.038); `detach` and `append` of a subtree to a new parent 1.012 (0.963
+  to 1.010) for each node moved. `Xot::remove`, which removes a node and
+  its descendants: of clones, 9.0 ns a node instead of 9.1 ns, 0.989
+  (0.979 to 1.033), and 1.029 (0.993 to 1.036) when the clones reuse free
+  slots; of a document copy 1.018 (0.876 to 0.974, a noisy line that read
+  1.071 in the copy before the change); of namespace nodes 20.9 ns instead
+  of 20.5 ns, 1.020 (1.029 to 1.044). Through the node maps:
+  `namespaces_mut().insert` 1.013 (1.013 to 1.022), again into free slots
+  1.026 (1.016 to 1.037), `namespaces_mut().remove` 20.0 ns instead of
+  19.2 ns, 1.042 (1.035 to 1.067), and adding a namespace node with
+  `append_namespace_node` 1.033 (1.014 to 1.057); `attributes_mut().insert`
+  of a second attribute 1.004 (0.989 to 1.014), and of the first attribute
+  of an element 23.7 ns instead of 21.6 ns, 1.097 (1.094 to 1.106). That
+  last difference does not come from the comparison: the same program with
+  the comparison taken out of `prepend`, which places the first attribute,
+  read 1.110, and with no tree kept 1.100, so it comes from where the code
+  lands. With a small kept tree, 2,000,000 appends to 1,000 elements in
+  turn take 16.7 to 16.9 ns each instead of 16.4 to 16.5 ns (1.018 to
+  1.027). Removing 200,000 small parsed documents one after another, each
+  of which drops its kept tree, takes 32.1 to 32.6 ns a document instead
+  of 28.5 ns (1.13 to 1.14; 1.06 to 1.25 for 10,000 to 100,000
+  documents). Parsing takes as long as before; the first parse into a new
   `Xot` makes one more allocation.
 
 - A change of a kept parsed tree that is not the first tree the `Xot`
