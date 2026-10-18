@@ -24,7 +24,7 @@ pub(crate) struct Html5Renderer<'a, N: Normalizer> {
     pushed: Vec<bool>,
 }
 
-pub(crate) fn html_matches_suppress(
+fn html_matches_suppress(
     xot: &Xot,
     html5_elements: &Html5Elements,
     names: &[NameId],
