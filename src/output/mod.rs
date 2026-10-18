@@ -11,6 +11,7 @@ mod icu_normalization;
 mod normalizer;
 mod pretty;
 mod serializer;
+mod walk;
 pub mod xml;
 mod xml_serializer;
 
@@ -22,6 +23,6 @@ pub(crate) use html5elements::Html5Elements;
 pub use normalizer::{NoopNormalizer, Normalizer};
 pub(crate) use pretty::Pretty;
 pub use pretty::PrettyOutputToken;
-pub(crate) use serializer::gen_outputs;
 pub use serializer::{Output, OutputToken};
+pub(crate) use walk::output_walk;
 pub(crate) use xml_serializer::XmlSerializer;

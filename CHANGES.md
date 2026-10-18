@@ -536,6 +536,21 @@
   an element takes 24 ns instead of 44 ns, and 14 namespaces 23 ns each
   instead of 66 ns.
 
+- `Xot::outputs`, `Xot::tokens`, `Xot::pretty_tokens` and the XML and
+  HTML 5 serializers walk the tree with one iterator that goes through the
+  edges of `Xot::traverse` and, for each element, through its namespace and
+  attribute nodes as they stand among its children, where they made a
+  generator for every edge and one more for each element. Items, order and
+  the prefixes of the top element are the same. On a generated document of 25
+  megabytes with 2.0M nodes, `Xot::outputs` goes through the 4.0M items in
+  24 ms instead of 197 ms, with no allocation instead of 7,601,022;
+  `Xot::serialize_xml_write` into a 64 KiB buffered writer takes 360 ms
+  instead of 553 to 572 ms (0.63 to 0.65) with 7.1M allocations instead of
+  14.7M, `Xot::tokens` 310 ms instead of 488 to 501 ms and HTML 5
+  serialization 329 ms instead of 511 to 535 ms. The calls to the writer
+  and the bytes are the same as before for every parameter and for writers
+  that fail.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text

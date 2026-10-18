@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crate::error::Error;
 use crate::output::{
-    gen_outputs, Html5Elements, Html5Serializer, Output, OutputToken, TokenSerializeParameters,
+    output_walk, Html5Elements, Html5Serializer, Output, OutputToken, TokenSerializeParameters,
     XmlSerializer,
 };
 use crate::output::{NoopNormalizer, Normalizer};
@@ -77,7 +77,7 @@ impl<'a> Html5<'a> {
         normalizer: N,
     ) -> Result<(), Error> {
         w.write_all(b"<!DOCTYPE html>")?;
-        let outputs = gen_outputs(self.xot, node);
+        let outputs = output_walk(self.xot, node);
         let mut serializer = Html5Serializer::new(
             self.xot,
             &self.html5_elements,
@@ -331,7 +331,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
             let name = name.full_name();
             doctype.serialize(name.as_ref(), w)?;
         }
-        let outputs = gen_outputs(self, node);
+        let outputs = output_walk(self, node);
         let mut serializer = XmlSerializer::new(
             self,
             node,
@@ -377,7 +377,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
     /// namespaces have been expanded, and you have access to Xot names using
     /// familiar Xot APIs.
     pub fn outputs(&self, node: Node) -> impl Iterator<Item = (Node, Output<'_>)> {
-        gen_outputs(self, node)
+        output_walk(self, node)
     }
 
     /// Serialize node into outputs and tokens.
@@ -398,7 +398,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
         parameters: TokenSerializeParameters,
         normalizer: N,
     ) -> impl Iterator<Item = (Node, Output<'a>, OutputToken)> + 'a {
-        let outputs = gen_outputs(self, node);
+        let outputs = output_walk(self, node);
         let mut serializer = XmlSerializer::new(self, node, parameters, normalizer);
         outputs.map(move |(node, output)| {
             let rendered = serializer.render_output(node, &output).unwrap();
@@ -429,7 +429,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
         suppress_elements: &'a [NameId],
         normalizer: N,
     ) -> impl Iterator<Item = (Node, Output<'a>, PrettyOutputToken)> + 'a {
-        let outputs = gen_outputs(self, node);
+        let outputs = output_walk(self, node);
         let mut serializer = XmlSerializer::new(self, node, parameters, normalizer);
         let mut pretty = Pretty::new(
             self,
