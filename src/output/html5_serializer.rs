@@ -1,26 +1,30 @@
 use std::borrow::Cow;
-use std::io;
+use std::io::Write;
 
-use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
+use crate::entity::Escapes;
 use crate::error::Error;
-use crate::id::NameId;
-use crate::output::escape;
-use crate::output::{NoopNormalizer, Normalizer};
+use crate::id::{NameId, PrefixId};
+use crate::output::{self, escape, Normalizer};
 use crate::xotdata::{Node, Xot};
 
-use super::fullname::FullnameSerializer;
 use super::html5elements::Html5Elements;
-use super::{Output, OutputToken, Pretty};
+use super::xml_serializer::write_indentation;
+use super::{output_walk, reset_large_scratch, NameScope, Output, Pretty, SCRATCH_CAPACITY};
 
-pub(crate) struct Html5Serializer<'a, N: Normalizer> {
+/// Renders the outputs of a node as HTML 5 text, one token at a time, into a
+/// string that the caller gives.
+pub(crate) struct Html5Renderer<'a, N: Normalizer> {
     xot: &'a Xot,
     html5_elements: &'a Html5Elements,
     cdata_section_names: &'a [NameId],
-    fullname_serializer: FullnameSerializer<'a>,
+    scope: NameScope,
     normalizer: N,
+    // for each open element: whether its start tag pushed namespace
+    // declarations
+    pushed: Vec<bool>,
 }
 
-fn html_matches_suppress(
+pub(crate) fn html_matches_suppress(
     xot: &Xot,
     html5_elements: &Html5Elements,
     names: &[NameId],
@@ -41,16 +45,17 @@ fn html_matches_suppress(
             return false;
         }
         // now we can do a case insensitive compare of the local name
-        let suppress_name = xot.local_name_str(*suppress_name).to_ascii_lowercase();
-        let name = xot.local_name_str(name_id).to_ascii_lowercase();
-        if suppress_name == name {
+        if xot
+            .local_name_str(*suppress_name)
+            .eq_ignore_ascii_case(xot.local_name_str(name_id))
+        {
             return true;
         }
     }
     false
 }
 
-impl<'a, N: Normalizer> Html5Serializer<'a, N> {
+impl<'a, N: Normalizer> Html5Renderer<'a, N> {
     pub(crate) fn new(
         xot: &'a Xot,
         html5_elements: &'a Html5Elements,
@@ -58,140 +63,90 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
         cdata_section_names: &'a [NameId],
         normalizer: N,
     ) -> Self {
-        let extra_declarations = xot.namespaces_in_scope(node).collect();
-        let fullname_serializer = FullnameSerializer::new(xot, extra_declarations);
+        let base = xot.namespaces_in_scope(node).collect::<Vec<_>>();
+        let scope = NameScope::new(xot, &base);
         Self {
             xot,
             html5_elements,
             cdata_section_names,
-            fullname_serializer,
+            scope,
             normalizer,
+            pushed: Vec::new(),
         }
     }
 
-    pub(crate) fn serialize<W: io::Write>(
-        &mut self,
-        w: &mut W,
-        outputs: impl Iterator<Item = (Node, Output<'a>)>,
-    ) -> Result<(), Error> {
-        for (node, output) in outputs {
-            self.serialize_node(w, node, output)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn serialize_pretty<W: io::Write>(
-        &mut self,
-        w: &mut W,
-        outputs: impl Iterator<Item = (Node, Output<'a>)>,
-        suppress: &[NameId],
-    ) -> Result<(), Error> {
-        // we have to do the relatively slow html_matches_suppress call here,
-        // as we cannot make an efficient HtmlNames at this point (as this
-        // needs a mutable Xot)
-        let is_suppressed = |name_id| {
-            self.html5_elements
-                .formatted_names
-                .matches(self.xot, name_id)
-                || html_matches_suppress(self.xot, self.html5_elements, suppress, name_id)
-        };
-        let is_inline = |name_id| self.html5_elements.is_inline(self.xot, name_id);
-        let mut pretty = Pretty::new(self.xot, is_suppressed, is_inline);
-        for (node, output) in outputs {
-            let (indentation, newline) = pretty.prettify(node, &output);
-            if indentation > 0 {
-                w.write_all(" ".repeat(indentation * 2).as_bytes())?;
-            }
-            self.serialize_node(w, node, output)?;
-            if newline {
-                w.write_all(b"\n")?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) fn serialize_node<W: io::Write>(
-        &mut self,
-        w: &mut W,
-        node: Node,
-        output: Output<'a>,
-    ) -> Result<(), Error> {
-        let data = self.render_output(node, &output)?;
-        if data.space {
-            w.write_all(b" ")?;
-        }
-        w.write_all(data.text.as_bytes())?;
-        Ok(())
-    }
-
-    pub(crate) fn render_output(
+    /// Append the text of the token for `output` to `out`, without the space
+    /// in front of it, and say whether a space goes in front of it.
+    pub(crate) fn token(
         &mut self,
         node: Node,
         output: &Output<'a>,
-    ) -> Result<OutputToken, Error> {
+        out: &mut String,
+    ) -> Result<bool, Error> {
         use Output::*;
-        let r = match output {
+        match output {
             StartTagOpen(element) => {
-                self.fullname_serializer
-                    .push(self.xot.namespace_declarations(node));
-                let namespace_id = self.xot.namespace_for_name(element.name_id);
+                let pushed = self.scope.push(
+                    self.xot
+                        .namespaces(node)
+                        .iter()
+                        .map(|(prefix, namespace)| (prefix, *namespace)),
+                );
+                self.pushed.push(pushed);
+                let namespace_id = self.xot.namespace_for_name(element.name());
                 if self
                     .html5_elements
                     .must_be_serialized_unprefixed(namespace_id)
-                    && !self.fullname_serializer.has_empty_prefix(namespace_id)
+                    && !self.scope.has_unprefixed(namespace_id)
                 {
                     // add the empty prefix for the namespace
-                    self.fullname_serializer.add_empty_prefix(namespace_id);
-                    // we also need to serialize the additional xmlns
-                    let local_name = self.xot.local_name_str(element.name_id);
-                    let namespace_uri = self.xot.namespace_str(namespace_id);
-                    return Ok(OutputToken {
-                        space: false,
-                        text: format!("<{} xmlns=\"{}\"", local_name, namespace_uri),
-                    });
+                    self.scope.add_unprefixed(namespace_id);
+                    // we also need to serialize the additional xmlns, as it
+                    // is
+                    out.push('<');
+                    out.push_str(self.xot.local_name_str(element.name()));
+                    out.push_str(" xmlns=\"");
+                    out.push_str(self.xot.namespace_str(namespace_id));
+                    out.push('"');
+                    return Ok(false);
                 }
-                OutputToken {
-                    space: false,
-                    text: format!(
-                        "<{}",
-                        self.fullname_serializer.element_fullname(element.name_id)?
-                    ),
-                }
+                let prefix = self.scope.element_prefix(self.xot, element.name())?;
+                out.push('<');
+                self.push_name(out, prefix, element.name());
+                Ok(false)
             }
-            StartTagClose => OutputToken {
-                space: false,
-                text: ">".to_string(),
-            },
+            StartTagClose => {
+                out.push('>');
+                Ok(false)
+            }
             EndTag(element) => {
-                let r = if self
+                let pushed = match self.pushed.pop() {
+                    Some(pushed) => pushed,
+                    // an end tag always follows its start tag in the walk
+                    None => self.xot.has_namespace_declarations(node),
+                };
+                // void elements don't get their end tag, so their text is
+                // empty
+                if !self
                     .html5_elements
                     .void_names
                     .matches(self.xot, element.name())
                 {
-                    // void elements don't get their end tag, so we just emit an
-                    // empty string
-                    OutputToken {
-                        space: false,
-                        text: "".to_string(),
-                    }
-                } else {
-                    OutputToken {
-                        space: false,
-                        text: format!(
-                            "</{}>",
-                            self.fullname_serializer.element_fullname(element.name_id)?
-                        ),
-                    }
-                };
-                self.fullname_serializer
-                    .pop(self.xot.has_namespace_declarations(node));
-                r
+                    let prefix = self.scope.element_prefix(self.xot, element.name())?;
+                    out.push_str("</");
+                    self.push_name(out, prefix, element.name());
+                    out.push('>');
+                }
+                if pushed {
+                    self.scope.pop();
+                }
+                Ok(false)
             }
             Prefix(prefix_id, namespace_id) => {
                 let element_name = self.xot.element(node).unwrap().name();
                 // we don't want to output non-empty prefixes unless the
                 // element has an attribute with the same prefix
-                if namespace_id == &self.xot.xml_namespace()
+                if *namespace_id == self.xot.xml_namespace()
                     || (*prefix_id == self.xot.empty_prefix()
                         && self.xot.namespace_for_name(element_name) != *namespace_id)
                     || (*prefix_id != self.xot.empty_prefix()
@@ -204,60 +159,46 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                             .keys()
                             .any(|name| self.xot.namespace_for_name(name) == *namespace_id))
                 {
-                    return Ok(OutputToken {
-                        space: false,
-                        text: "".to_string(),
-                    });
+                    return Ok(false);
                 }
-
+                if *prefix_id == self.xot.empty_prefix_id {
+                    out.push_str("xmlns=\"");
+                } else {
+                    out.push_str("xmlns:");
+                    out.push_str(self.xot.prefix_str(*prefix_id));
+                    out.push_str("=\"");
+                }
                 // escaped like the value of an attribute in a namespace, and
                 // not normalized, as that would change the namespace
-                let namespace = serialize_attribute(
-                    self.xot.namespace_str(*namespace_id).into(),
-                    &NoopNormalizer,
-                    Escapes::MarkupOnly,
-                );
-                if *prefix_id == self.xot.empty_prefix_id {
-                    OutputToken {
-                        space: true,
-                        text: format!("xmlns=\"{}\"", namespace),
-                    }
-                } else {
-                    let prefix = self.xot.prefix_str(*prefix_id);
-                    OutputToken {
-                        space: true,
-                        text: format!("xmlns:{}=\"{}\"", prefix, namespace),
-                    }
-                }
+                escape::push_markup_attribute(out, self.xot.namespace_str(*namespace_id), 0);
+                out.push('"');
+                Ok(true)
             }
             Attribute(name_id, value) => {
-                let fullname = self.fullname_serializer.attribute_fullname(*name_id)?;
+                let prefix = self.scope.attribute_prefix(self.xot, *name_id)?;
                 let namespace = self.xot.namespace_for_name(*name_id);
-                if self.html5_elements.is_html_namespace(self.xot, namespace) {
-                    let local_name = self.xot.local_name_str(*name_id);
-                    // boolean attribute
-                    // no prefix and local name is the same as value
-                    if self
-                        .fullname_serializer
-                        .attribute_prefix(*name_id)?
-                        .is_none()
-                        && local_name.eq_ignore_ascii_case(value)
-                    {
-                        return Ok(OutputToken {
-                            space: true,
-                            text: format!("{}", fullname),
-                        });
-                    }
+                // boolean attribute: no prefix, and the local name is the
+                // same as the value
+                if prefix.is_none()
+                    && self.html5_elements.is_html_namespace(self.xot, namespace)
+                    && self
+                        .xot
+                        .local_name_str(*name_id)
+                        .eq_ignore_ascii_case(value)
+                {
+                    out.push_str(self.xot.local_name_str(*name_id));
+                    return Ok(true);
                 }
-                let value = if namespace != self.xot.no_namespace() {
-                    serialize_attribute((*value).into(), &self.normalizer, Escapes::MarkupOnly)
+                self.push_name(out, prefix, *name_id);
+                out.push_str("=\"");
+                let normalized = self.normalizer.normalize(Cow::Borrowed(*value));
+                if namespace != self.xot.no_namespace() {
+                    escape::push_markup_attribute(out, &normalized, 0);
                 } else {
-                    serialize_attribute_html((*value).into(), &self.normalizer)
-                };
-                OutputToken {
-                    space: true,
-                    text: format!("{}=\"{}\"", fullname, value),
+                    escape::push_html_attribute(out, &normalized, 0);
                 }
+                out.push('"');
+                Ok(true)
             }
             Text(text) => {
                 // a text node is usually a child of an element, but it can also
@@ -268,29 +209,27 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                     .parent(node)
                     .and_then(|parent| self.xot.element(parent))
                     .map(|element| element.name());
-                let value = match element_name {
+                let normalized = self.normalizer.normalize(Cow::Borrowed(*text));
+                match element_name {
                     Some(name) if self.html5_elements.no_escape_names.matches(self.xot, name) => {
-                        serialize_text_no_escape((*text).into(), &self.normalizer).to_string()
+                        out.push_str(&normalized);
                     }
                     Some(name) if self.cdata_section_names.contains(&name) => {
-                        serialize_cdata((*text).into(), &self.normalizer, Escapes::MarkupOnly)
-                            .to_string()
+                        escape::push_cdata(out, &normalized, Escapes::MarkupOnly);
                     }
                     Some(name) if !self.html5_elements.is_html_element(self.xot, name) => {
-                        serialize_text((*text).into(), &self.normalizer, false, Escapes::MarkupOnly)
-                            .to_string()
+                        escape::push_markup_text(out, &normalized, 0, false);
                     }
-                    _ => serialize_text_html((*text).into(), &self.normalizer).to_string(),
-                };
-                OutputToken {
-                    space: false,
-                    text: value,
+                    _ => escape::push_html_text(out, &normalized, 0),
                 }
+                Ok(false)
             }
-            Comment(text) => OutputToken {
-                space: false,
-                text: format!("<!--{}-->", text),
-            },
+            Comment(text) => {
+                out.push_str("<!--");
+                out.push_str(text);
+                out.push_str("-->");
+                Ok(false)
+            }
             ProcessingInstruction(target, data) => {
                 let (target, ns) = self.xot.name_ns_str(*target);
                 if !ns.is_empty() {
@@ -302,22 +241,97 @@ impl<'a, N: Normalizer> Html5Serializer<'a, N> {
                     if data.contains('>') {
                         return Err(Error::ProcessingInstructionGtInHtml(data.to_string()));
                     }
-                    OutputToken {
-                        space: false,
-                        text: format!("<?{} {}>", target, data),
-                    }
-                } else {
-                    OutputToken {
-                        space: false,
-                        text: format!("<?{}>", target),
-                    }
                 }
+                out.push_str("<?");
+                out.push_str(target);
+                if let Some(data) = data {
+                    out.push(' ');
+                    out.push_str(data);
+                }
+                out.push('>');
+                Ok(false)
             }
-        };
-        Ok(r)
+        }
+    }
+
+    /// Append a name with its prefix, if any.
+    #[inline]
+    fn push_name(&self, out: &mut String, prefix: Option<PrefixId>, name_id: NameId) {
+        if let Some(prefix) = prefix {
+            out.push_str(self.xot.prefix_str(prefix));
+            out.push(':');
+        }
+        out.push_str(self.xot.local_name_str(name_id));
     }
 }
 
+/// Write `node` as HTML 5 to `w`.
+///
+/// As for XML (see `write_xml`), each token is rendered into one string that
+/// is used again for the next, and `w` gets the calls it got when each token
+/// was a new string: first the doctype, then for each token the indentation,
+/// the space in front of it, the token (also when it is empty) and the
+/// newline, each in one `write_all`. When a token cannot be written, `w` has
+/// had everything before it, its indentation included, and nothing of it.
+pub(crate) fn write_html<N: Normalizer>(
+    xot: &Xot,
+    html5_elements: &Html5Elements,
+    parameters: output::html5::Parameters,
+    node: Node,
+    w: &mut dyn Write,
+    normalizer: N,
+) -> Result<(), Error> {
+    w.write_all(b"<!DOCTYPE html>")?;
+    let outputs = output_walk(xot, node);
+    let mut renderer = Html5Renderer::new(
+        xot,
+        html5_elements,
+        node,
+        &parameters.cdata_section_elements,
+        normalizer,
+    );
+    let mut scratch = String::with_capacity(SCRATCH_CAPACITY);
+    if let Some(indentation) = &parameters.indentation {
+        let suppress = &indentation.suppress;
+        // we have to do the relatively slow html_matches_suppress call here,
+        // as we cannot make an efficient HtmlNames at this point (as this
+        // needs a mutable Xot)
+        let is_suppressed = |name_id| {
+            html5_elements.formatted_names.matches(xot, name_id)
+                || html_matches_suppress(xot, html5_elements, suppress, name_id)
+        };
+        let is_inline = |name_id| html5_elements.is_inline(xot, name_id);
+        let mut pretty = Pretty::new(xot, is_suppressed, is_inline);
+        for (node, output) in outputs {
+            let (level, newline) = pretty.prettify(node, &output);
+            if level > 0 {
+                write_indentation(w, level)?;
+            }
+            scratch.clear();
+            if renderer.token(node, &output, &mut scratch)? {
+                w.write_all(b" ")?;
+            }
+            w.write_all(scratch.as_bytes())?;
+            if newline {
+                w.write_all(b"\n")?;
+            }
+            reset_large_scratch(&mut scratch);
+        }
+    } else {
+        for (node, output) in outputs {
+            scratch.clear();
+            if renderer.token(node, &output, &mut scratch)? {
+                w.write_all(b" ")?;
+            }
+            w.write_all(scratch.as_bytes())?;
+            reset_large_scratch(&mut scratch);
+        }
+    }
+    Ok(())
+}
+
+/// The text of an HTML element, escaped, as the HTML 5 writer escapes it.
+#[cfg(test)]
 pub(crate) fn serialize_text_html<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
@@ -333,6 +347,9 @@ pub(crate) fn serialize_text_html<'a, N: Normalizer>(
     result.into()
 }
 
+/// The value of an attribute in no namespace, escaped, as the HTML 5 writer
+/// escapes it.
+#[cfg(test)]
 pub(crate) fn serialize_attribute_html<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
@@ -346,13 +363,6 @@ pub(crate) fn serialize_attribute_html<'a, N: Normalizer>(
     let mut result = String::with_capacity(bytes.len() + bytes.len() / 8 + 16);
     escape::push_html_attribute(&mut result, &normalized_content, start);
     result.into()
-}
-
-pub(crate) fn serialize_text_no_escape<'a, N: Normalizer>(
-    content: Cow<'a, str>,
-    normalizer: &N,
-) -> Cow<'a, str> {
-    normalizer.normalize(content)
 }
 
 #[cfg(test)]
@@ -430,9 +440,80 @@ pub(crate) fn old_serialize_attribute_html<'a, N: Normalizer>(
 
 #[cfg(test)]
 mod tests {
-    use crate::output::{html5::Parameters, html5elements::XHTML_NS, Indentation};
+    use crate::output::{html5::Parameters, html5elements::XHTML_NS, Indentation, NoopNormalizer};
 
     use super::*;
+
+    // turns x into a non-breaking space and y into &
+    struct Replacing;
+
+    impl Normalizer for Replacing {
+        fn normalize<'a>(&self, content: Cow<'a, str>) -> Cow<'a, str> {
+            if content.contains(['x', 'y']) {
+                Cow::Owned(content.replace('x', "\u{a0}").replace('y', "&"))
+            } else {
+                content
+            }
+        }
+    }
+
+    #[test]
+    fn test_html_escapers_equal_the_old_bodies() {
+        for s in [
+            "",
+            "a",
+            "x",
+            "y",
+            "a<b",
+            "a&b",
+            "'\"",
+            "\u{a0}",
+            "\u{a1}\u{80}",
+            "ax'y\u{a0}<>",
+            "z",
+        ] {
+            assert_eq!(
+                serialize_text_html(s.into(), &NoopNormalizer),
+                old_serialize_text_html(s.into(), &NoopNormalizer)
+            );
+            assert_eq!(
+                serialize_text_html(s.into(), &Replacing),
+                old_serialize_text_html(s.into(), &Replacing)
+            );
+            assert_eq!(
+                serialize_attribute_html(s.into(), &NoopNormalizer),
+                old_serialize_attribute_html(s.into(), &NoopNormalizer)
+            );
+            assert_eq!(
+                serialize_attribute_html(s.into(), &Replacing),
+                old_serialize_attribute_html(s.into(), &Replacing)
+            );
+        }
+        assert!(matches!(
+            serialize_text_html("a'\"".into(), &NoopNormalizer),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            serialize_attribute_html("a<>".into(), &NoopNormalizer),
+            Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn test_normalizer_in_html() {
+        let mut xot = Xot::new();
+        let root = xot
+            .parse(r#"<html><body a="x'y" xmlns:p="urn:p" p:b="xy"><script>xy</script><p>x&lt;y</p><i xmlns="urn:i">xy</i></body></html>"#)
+            .unwrap();
+        let s = xot
+            .html5()
+            .serialize_string_with_normalizer(Default::default(), root, Replacing)
+            .unwrap();
+        assert_eq!(
+            s,
+            "<!DOCTYPE html><html><body xmlns:p=\"urn:p\" a=\"&nbsp;&apos;&amp;\" p:b=\"\u{a0}&amp;\"><script>\u{a0}&</script><p>&nbsp;&lt;&amp;</p><i xmlns=\"urn:i\">\u{a0}&amp;</i></body></html>"
+        );
+    }
 
     #[test]
     fn test_never_empty_html() {

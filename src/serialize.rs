@@ -2,8 +2,8 @@ use std::io::Write;
 
 use crate::error::Error;
 use crate::output::{
-    output_walk, reset_large_scratch, write_xml, Html5Elements, Html5Serializer, Output,
-    OutputToken, TokenSerializeParameters, XmlRenderer, SCRATCH_CAPACITY,
+    output_walk, reset_large_scratch, write_html, write_xml, Html5Elements, Output, OutputToken,
+    TokenSerializeParameters, XmlRenderer, SCRATCH_CAPACITY,
 };
 use crate::output::{NoopNormalizer, Normalizer};
 use crate::output::{Pretty, PrettyOutputToken};
@@ -75,21 +75,14 @@ impl<'a> Html5<'a> {
         w: &mut impl Write,
         normalizer: N,
     ) -> Result<(), Error> {
-        w.write_all(b"<!DOCTYPE html>")?;
-        let outputs = output_walk(self.xot, node);
-        let mut serializer = Html5Serializer::new(
+        write_html(
             self.xot,
             &self.html5_elements,
+            parameters,
             node,
-            &parameters.cdata_section_elements,
+            w,
             normalizer,
-        );
-        if let Some(indentation) = parameters.indentation {
-            serializer.serialize_pretty(w, outputs, &indentation.suppress)?;
-        } else {
-            serializer.serialize(w, outputs)?;
-        }
-        Ok(())
+        )
     }
 }
 

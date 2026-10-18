@@ -603,6 +603,23 @@
   serialization takes 95.7 to 95.9 ms instead of 549.0 to 557.4 ms (0.17,
   it was 0.18).
 
+- The HTML 5 serializer renders each token into one string that it clears
+  and uses again, as the XML serializer does, writes prefixed names in pieces
+  where it formatted them, and looks up prefixes in the same stack of
+  declarations, with the default namespace it adds for SVG, MathML and XHTML
+  elements. It matches element names against its lists of HTML element names
+  without a lowercase copy of each name, and compares the names that
+  suppress indentation without lowercase copies too. The output, the calls
+  to the writer and the errors are the same as before. On the generated
+  document of 25 megabytes with 2.0M nodes (release, a 64 KiB buffered
+  writer, interleaved, 18 rounds in each of 2 runs, load 6 to 12),
+  `Html5::serialize_write` takes 94 ms instead of 509 to 512 ms (0.18, it
+  was 0.57 after the escaping change), and indented 122 ms instead of 540 to
+  542 ms (0.23). The same document without namespaces takes 102 ms instead of
+  456 ms (0.22), and indented 132 ms instead of 490 ms (0.27), with 1,351
+  allocations instead of 14,503,284, nearly all of them made by `Xot::html5`
+  for its name lists.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text

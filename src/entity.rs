@@ -5,7 +5,9 @@ use std::fmt::Write;
 use xmlparser::XmlCharExt;
 
 use crate::error::ParseError;
+#[cfg(test)]
 use crate::output::escape;
+#[cfg(test)]
 use crate::output::Normalizer;
 use crate::Span;
 
@@ -263,6 +265,7 @@ fn parse_content_with_changes<'a>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn serialize_text<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
@@ -295,6 +298,7 @@ pub(crate) fn serialize_text<'a, N: Normalizer>(
     result.into()
 }
 
+#[cfg(test)]
 pub(crate) fn serialize_cdata<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
@@ -306,6 +310,7 @@ pub(crate) fn serialize_cdata<'a, N: Normalizer>(
     result.into()
 }
 
+#[cfg(test)]
 pub(crate) fn serialize_attribute<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,

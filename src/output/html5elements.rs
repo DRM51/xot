@@ -9,6 +9,9 @@ pub(crate) const XHTML_NS: &str = "https://www.w3.org/1999/xhtml";
 const MATHML_NS: &str = "http://www.w3.org/1998/Math/MathML";
 const SVG_NS: &str = "http://www.w3.org/2000/svg";
 
+/// The length in bytes of the longest name in the lists of [`HtmlNames`].
+const MAX_NAME_LEN: usize = 16;
+
 #[derive(Debug)]
 pub(crate) struct Html5Elements {
     xhtml_namespace_id: NamespaceId,
@@ -62,11 +65,20 @@ impl HtmlNames {
         if !self.is_html_element(xot, name_id) {
             return false;
         }
-        // otherwise, we do a case-insensitive lookup of the local name
-        let name = xot.local_name_str(name_id);
-        // now lowercase the name and look it up
-        let name = name.to_ascii_lowercase();
-        self.names.contains(&name)
+        // otherwise, we do a case-insensitive lookup of the local name; no
+        // name in the lists is longer than MAX_NAME_LEN bytes, and lowercasing
+        // keeps the length, so a longer name cannot be one of them
+        let name = xot.local_name_str(name_id).as_bytes();
+        if name.len() > MAX_NAME_LEN {
+            return false;
+        }
+        let mut lowercase = [0u8; MAX_NAME_LEN];
+        for (to, from) in lowercase.iter_mut().zip(name) {
+            *to = from.to_ascii_lowercase();
+        }
+        // lowercasing the ASCII bytes of UTF-8 keeps it UTF-8
+        let lowercase = std::str::from_utf8(&lowercase[..name.len()]).unwrap();
+        self.names.contains(lowercase)
     }
 }
 
@@ -246,5 +258,114 @@ impl Html5Elements {
 
     pub(crate) fn is_html_namespace(&self, xot: &Xot, namespace_id: NamespaceId) -> bool {
         namespace_id == self.xhtml_namespace_id || namespace_id == xot.no_namespace()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl HtmlNames {
+        // the lookup before it lowercased the name into a buffer
+        fn old_matches(&self, xot: &Xot, name_id: NameId) -> bool {
+            if self.ids.contains(&name_id) {
+                return true;
+            }
+            if !self.is_html_element(xot, name_id) {
+                return false;
+            }
+            let name = xot.local_name_str(name_id).to_ascii_lowercase();
+            self.names.contains(&name)
+        }
+    }
+
+    fn all_names(elements: &Html5Elements) -> [&HtmlNames; 5] {
+        [
+            &elements.html5_names,
+            &elements.phrasing_content_names,
+            &elements.void_names,
+            &elements.formatted_names,
+            &elements.no_escape_names,
+        ]
+    }
+
+    #[test]
+    fn test_names_are_short_and_lowercase() {
+        let mut xot = Xot::new();
+        let elements = Html5Elements::new(&mut xot);
+        for names in all_names(&elements) {
+            assert!(!names.names.is_empty());
+            for name in &names.names {
+                assert!(name.len() <= MAX_NAME_LEN, "{name}");
+                assert_eq!(*name, name.to_ascii_lowercase());
+            }
+        }
+    }
+
+    #[test]
+    fn test_matches_equals_lowercase_lookup() {
+        let mut xot = Xot::new();
+        let elements = Html5Elements::new(&mut xot);
+        let xhtml = xot.add_namespace(XHTML_NS);
+        let svg = xot.add_namespace(SVG_NS);
+        let mut locals = vec![
+            "NoScript",
+            "nOsCrIpT",
+            "FigCaption",
+            "Pre",
+            "sCrIpT",
+            "STYLE",
+            "Br",
+            "wBr",
+            "basefont",
+            "BaseFont",
+            "span",
+            "Span\u{130}",
+            "\u{130}",
+            "\u{c9}m",
+            "figcaptionfigcap",
+            "FIGCAPTIONFIGCAP",
+            "figcaptionfigcapt",
+            "averyveryverylongnamethatgoeson",
+            "x",
+            "",
+        ];
+        let mut list_names = Vec::new();
+        for names in all_names(&elements) {
+            for name in &names.names {
+                list_names.push(name.clone());
+                list_names.push(name.to_ascii_uppercase());
+                let mixed: String = name
+                    .chars()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        if i % 2 == 0 {
+                            c.to_ascii_uppercase()
+                        } else {
+                            c
+                        }
+                    })
+                    .collect();
+                list_names.push(mixed);
+            }
+        }
+        locals.extend(list_names.iter().map(|s| s.as_str()));
+        let no_namespace = xot.no_namespace();
+        let mut names = Vec::new();
+        for local in &locals {
+            for ns in [no_namespace, xhtml, svg] {
+                names.push(xot.add_name_ns(local, ns));
+            }
+        }
+        for names_list in all_names(&elements) {
+            for name in &names {
+                assert_eq!(
+                    names_list.matches(&xot, *name),
+                    names_list.old_matches(&xot, *name),
+                    "{:?}",
+                    xot.local_name_str(*name)
+                );
+            }
+        }
     }
 }

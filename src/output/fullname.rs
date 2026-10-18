@@ -85,6 +85,7 @@ impl<'a> FullnameSerializer<'a> {
             .push(FullnameInfo::new(defined_namespaces, current_fullname_info));
     }
 
+    #[cfg(test)]
     pub(crate) fn has_empty_prefix(&self, namespace_id: NamespaceId) -> bool {
         let prefix_id = self
             .top()
@@ -110,7 +111,9 @@ impl<'a> FullnameSerializer<'a> {
     // }
 
     // this is handy for the HTML rendering system, which insists some namespaces
-    // should be in the empty prefix (xhtml, mathml, svg)
+    // should be in the empty prefix (xhtml, mathml, svg); the HTML 5 writer now
+    // uses NameScope, and the tests compare the two
+    #[cfg(test)]
     pub(crate) fn add_empty_prefix(&mut self, namespace_id: NamespaceId) {
         let current_fullname_info = self.stack.last_mut().unwrap();
         let empty_entry = (self.xot.empty_prefix(), namespace_id);

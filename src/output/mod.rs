@@ -20,7 +20,7 @@ mod xml_serializer;
 pub use common::{Indentation, TokenSerializeParameters};
 pub(crate) use fullname::FullnameSerializer;
 pub(crate) use fullname::NamespaceDeclarations;
-pub(crate) use html5_serializer::Html5Serializer;
+pub(crate) use html5_serializer::write_html;
 pub(crate) use html5elements::Html5Elements;
 pub use normalizer::{NoopNormalizer, Normalizer};
 pub(crate) use pretty::Pretty;

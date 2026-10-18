@@ -1,4 +1,5 @@
-//! The namespaces in scope of the XML writer: one flat stack of declarations,
+//! The namespaces in scope of the XML and HTML 5 writers: one flat stack of
+//! declarations,
 //! instead of a copied list for each element that declares namespaces. It
 //! picks the same prefixes as [`FullnameSerializer`](super::FullnameSerializer).
 //!
@@ -28,12 +29,17 @@ const DENSE_PREFIXES: u32 = 4096;
 /// The level of the namespaces in scope of the node that is serialized.
 const BASE_LEVEL: u32 = 1;
 
+/// The `previous` of an entry that [`NameScope::add_unprefixed`] added, which
+/// did not set the level of its prefix.
+const ADDED: u32 = u32::MAX;
+
 #[derive(Debug, Clone, Copy)]
 struct ScopeEntry {
     prefix: PrefixId,
     namespace: NamespaceId,
     level: u32,
-    // the level that declared the prefix before this entry did, 0 for none
+    // the level that declared the prefix before this entry did, 0 for none,
+    // or ADDED for an entry that add_unprefixed added
     previous: u32,
 }
 
@@ -154,9 +160,51 @@ impl NameScope {
         };
         for index in (mark..self.entries.len()).rev() {
             let entry = self.entries[index];
-            self.set_level(entry.prefix, entry.previous);
+            // an entry that `add_unprefixed` added did not set a level
+            if entry.previous != ADDED {
+                self.set_level(entry.prefix, entry.previous);
+            }
         }
         self.entries.truncate(mark);
+    }
+
+    /// Add the empty prefix for `namespace` to the last level, or to the
+    /// base when there is none, as [`FullnameSerializer::add_empty_prefix`]
+    /// adds it to the last list. The HTML 5 writer uses this for a namespace
+    /// that it writes as the default namespace without a declaration in the
+    /// tree.
+    ///
+    /// The entry does not change the level of the empty prefix: a later level
+    /// that declares the empty prefix takes it out of scope, as such a level
+    /// leaves it out of its list, but it takes no entry before it out of
+    /// scope. It goes away with its level.
+    ///
+    /// [`FullnameSerializer::add_empty_prefix`]: super::FullnameSerializer::add_empty_prefix
+    #[inline]
+    pub(crate) fn add_unprefixed(&mut self, namespace: NamespaceId) {
+        if self.base_popped {
+            panic!("{}", BASE_POPPED);
+        }
+        self.entries.push(ScopeEntry {
+            prefix: self.empty,
+            namespace,
+            level: self.marks.len() as u32 + BASE_LEVEL,
+            previous: ADDED,
+        });
+    }
+
+    /// Whether the empty prefix is in scope for `namespace`, as
+    /// [`FullnameSerializer::has_empty_prefix`] says.
+    ///
+    /// [`FullnameSerializer::has_empty_prefix`]: super::FullnameSerializer::has_empty_prefix
+    #[inline]
+    pub(crate) fn has_unprefixed(&self, namespace: NamespaceId) -> bool {
+        if self.base_popped {
+            panic!("{}", BASE_POPPED);
+        }
+        self.entries.iter().rev().any(|entry| {
+            entry.prefix == self.empty && entry.namespace == namespace && self.live(entry)
+        })
     }
 
     /// Whether no later level declares the prefix of the entry.
@@ -285,6 +333,9 @@ mod tests {
         Pop,
         Element(usize),
         Attribute(usize),
+        // a namespace index, as for a declaration
+        AddUnprefixed(usize),
+        HasUnprefixed(usize),
     }
 
     fn arb_declaration() -> impl Strategy<Value = (usize, usize)> {
@@ -297,6 +348,8 @@ mod tests {
             2 => Just(Op::Pop),
             3 => (0..=NAMESPACES).prop_map(Op::Element),
             3 => (0..=NAMESPACES).prop_map(Op::Attribute),
+            1 => (0..=NAMESPACES).prop_map(Op::AddUnprefixed),
+            2 => (0..=NAMESPACES).prop_map(Op::HasUnprefixed),
         ]
     }
 
@@ -363,6 +416,18 @@ mod tests {
                         expected.attribute_prefix(name).map_err(|e| e.to_string())
                     );
                 }
+                Op::AddUnprefixed(ns) => {
+                    let (_, namespace) = declaration(&world, (0, *ns));
+                    expected.add_empty_prefix(namespace);
+                    scope.add_unprefixed(namespace);
+                }
+                Op::HasUnprefixed(ns) => {
+                    let (_, namespace) = declaration(&world, (0, *ns));
+                    assert_eq!(
+                        scope.has_unprefixed(namespace),
+                        expected.has_empty_prefix(namespace)
+                    );
+                }
             }
         }
         // leave every level, and look again at the base
@@ -382,6 +447,13 @@ mod tests {
                     .attribute_prefix(xot, *name)
                     .map_err(|e| e.to_string()),
                 expected.attribute_prefix(*name).map_err(|e| e.to_string())
+            );
+        }
+        for ns in 0..=NAMESPACES {
+            let (_, namespace) = declaration(&world, (0, ns));
+            assert_eq!(
+                scope.has_unprefixed(namespace),
+                expected.has_empty_prefix(namespace)
             );
         }
     }
@@ -459,6 +531,22 @@ mod tests {
             }));
             assert!(old.is_some());
             assert_eq!(old, new);
+            let old = panic_message(std::panic::AssertUnwindSafe(|| {
+                expected.has_empty_prefix(ns);
+            }));
+            let new = panic_message(std::panic::AssertUnwindSafe(|| {
+                scope.has_unprefixed(ns);
+            }));
+            assert!(old.is_some());
+            assert_eq!(old, new);
+            let old = panic_message(std::panic::AssertUnwindSafe(|| {
+                expected.add_empty_prefix(ns);
+            }));
+            let new = panic_message(std::panic::AssertUnwindSafe(|| {
+                scope.add_unprefixed(ns);
+            }));
+            assert!(old.is_some());
+            assert_eq!(old, new);
             // no declarations: nothing happens
             expected.push(Vec::new());
             assert!(!scope.push(std::iter::empty()));
@@ -481,6 +569,36 @@ mod tests {
         scope.pop();
         assert_eq!(scope.element_prefix(&xot, a1).unwrap(), Some(p));
         assert!(scope.attribute_prefix(&xot, a2).is_err());
+    }
+
+    #[test]
+    fn test_add_unprefixed() {
+        let mut xot = Xot::new();
+        let ns1 = xot.add_namespace("urn:1");
+        let ns2 = xot.add_namespace("urn:2");
+        let a1 = xot.add_name_ns("a", ns1);
+        let p = xot.add_prefix("p");
+        let empty = xot.empty_prefix();
+        let mut scope = NameScope::new(&xot, &[(p, ns1)]);
+        assert!(!scope.has_unprefixed(ns1));
+        assert!(scope.push([(p, ns2)].into_iter()));
+        scope.add_unprefixed(ns1);
+        assert!(scope.has_unprefixed(ns1));
+        assert_eq!(scope.element_prefix(&xot, a1).unwrap(), None);
+        // a later level that declares the empty prefix takes it out of scope
+        assert!(scope.push([(empty, ns2)].into_iter()));
+        assert!(!scope.has_unprefixed(ns1));
+        assert!(scope.element_prefix(&xot, a1).is_err());
+        scope.pop();
+        assert!(scope.has_unprefixed(ns1));
+        // it goes away with its level, which leaves the levels as they were
+        scope.pop();
+        assert!(!scope.has_unprefixed(ns1));
+        assert_eq!(scope.element_prefix(&xot, a1).unwrap(), Some(p));
+        assert!(scope.push([(empty, ns2)].into_iter()));
+        assert!(scope.has_unprefixed(ns2));
+        scope.pop();
+        assert!(!scope.has_unprefixed(ns2));
     }
 
     #[test]
