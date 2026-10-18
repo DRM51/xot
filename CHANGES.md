@@ -681,7 +681,14 @@
   to 1.010) for each node moved. `Xot::remove`, which removes a node and
   its descendants: of clones, 9.0 ns a node instead of 9.1 ns, 0.989
   (0.979 to 1.033), and 1.029 (0.993 to 1.036) when the clones reuse free
-  slots; of a document copy 1.018 (0.876 to 0.974, a noisy line that read
+  slots. This line varies more with the compiled binary than with the
+  code: after the change to the node maps below, one release binary read
+  1.090 to 1.146 over 7 runs of 31 to 41 rounds at load 4 to 6, a second
+  binary compiled from the same source in another folder read 1.011 and
+  1.022, the program before the change compiled again read 1.011, and a
+  binary with the comparisons emptied read 1.080. The comparison is made
+  once for each removed subtree, not for each node. `Xot::remove` of a
+  document copy 1.018 (0.876 to 0.974, a noisy line that read
   1.071 in the copy before the change); of namespace nodes 20.9 ns instead
   of 20.5 ns, 1.020 (1.029 to 1.044). Through the node maps:
   `namespaces_mut().insert` 1.013 (1.013 to 1.022), again into free slots
