@@ -587,25 +587,30 @@
   megabytes of a smaller document takes 358 ms instead of 417 ms (0.86),
   where the calls to the file, the same as before, take most of the time.
 
-- The XML serializer looks up the prefix of a name in one stack of the
-  namespace declarations of the open elements, where it copied the list of
-  the namespaces in scope for each element that declares namespaces. The
-  prefixes it uses, including for two declarations of one prefix on one
-  element and for names whose namespace has several prefixes in scope, are
-  the same as before, and so are the output and the errors. On a generated
-  document with 640,017 nodes in which 160,000 elements declare a
-  namespace below a root with 14 (release, a 64 KiB buffered writer, interleaved, 9 rounds in each of 2
-  runs, load 4 to 5), `Xot::serialize_xml_write` takes 33.6 ms instead of
-  186.9 to 189.0 ms (0.18, it was 0.31 with the lists copied), with 10
-  allocations instead of 4,480,053, and `Xot::tokens` 44.2 to 44.6 ms
-  instead of 168.7 to 171.2 ms (0.26). On the generated document of 25
-  megabytes with 2.0M nodes, which declares its namespaces once, the
-  serialization takes 95.7 to 95.9 ms instead of 549.0 to 557.4 ms (0.17,
-  it was 0.18).
+- The XML serializer keeps the namespace declarations in scope in one list
+  that it changes as elements open and close: an element that declares
+  namespaces takes the entries for the prefixes it declares out of the list
+  and appends its declarations, and its end puts the list back as it was.
+  It copied the list of the namespaces in scope for each element that
+  declares namespaces. The prefixes it uses, including for two declarations
+  of one prefix on one element and for names whose namespace has several
+  prefixes in scope, are the same as before, and so are the output and the
+  errors. On a generated document with 640,017 nodes in which 160,000
+  elements declare a namespace below a root with 14 (release, a 64 KiB
+  buffered writer, interleaved, 9 rounds, load 8 to 10),
+  `Xot::serialize_xml_write` takes 33.0 ms instead of 190.2 ms (0.17, it
+  was 0.31 with the lists copied), with 10 allocations instead of
+  4,480,053, and `Xot::tokens` 43.9 ms instead of 171.0 ms (0.26). On the
+  generated document of 25 megabytes with 2.0M nodes, which declares its
+  namespaces once, the serialization takes 95.2 ms instead of 565.7 ms
+  (0.17, it was 0.18). A lookup reads only declarations in scope, as
+  before: 20,000 nested elements that each declare the same prefix again
+  take 2.1 ms instead of 9.7 ms, and 100 elements below a root that
+  declares 5,000 prefixes for one namespace 0.67 ms instead of 1.35 ms.
 
 - The HTML 5 serializer renders each token into one string that it clears
   and uses again, as the XML serializer does, writes prefixed names in pieces
-  where it formatted them, and looks up prefixes in the same stack of
+  where it formatted them, and looks up prefixes in the same list of
   declarations, with the default namespace it adds for SVG, MathML and XHTML
   elements. It matches element names against its lists of HTML element names
   without a lowercase copy of each name, and compares the names that

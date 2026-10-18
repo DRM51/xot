@@ -1,58 +1,55 @@
-//! The namespaces in scope of the XML and HTML 5 writers: one flat stack of
-//! declarations,
-//! instead of a copied list for each element that declares namespaces. It
-//! picks the same prefixes as [`FullnameSerializer`](super::FullnameSerializer).
+//! The namespaces in scope of the XML and HTML 5 writers: one list of
+//! declarations that changes as elements open and close, instead of a copied
+//! list for each element that declares namespaces. It picks the same
+//! prefixes as `FullnameSerializer`.
 //!
 //! `FullnameSerializer` keeps, for each open element that declares
 //! namespaces, the list of the declarations in scope: the list of the parent
 //! without the entries whose prefix this element declares, followed by the
-//! declarations of this element. That list is the flat stack of all
-//! declarations with every entry dropped whose prefix is declared again by a
-//! later *level* (the declarations of one element are one level, so two
-//! declarations of one prefix on one element both stay). An entry is live
-//! when no later level declares its prefix, and a lookup reads the live
-//! entries from the last to the first, as the copied lists are read.
+//! declarations of this element (two declarations of one prefix on one
+//! element both stay). `NameScope` keeps only the list of the innermost
+//! such element. When an element declares namespaces, it takes the entries
+//! whose prefix the element declares out of the list, notes each with its
+//! place, and appends the declarations; at the end of the element it cuts
+//! them off and puts the entries it took out back in their places. A lookup
+//! reads the list from the last entry to the first, as a copied list is
+//! read.
 //!
-//! The levels are numbers: the namespaces in scope of the node that is
-//! serialized are level 1, and the element that opens the k-th level of
-//! declarations has level k + 1. For each prefix, a table holds the highest
-//! level that declares it, or 0 when no level does.
+//! The list holds only entries in scope, so a lookup and a change cost no
+//! more than in a copied list, however deep the elements are and however
+//! many prefixes are declared. A count of the entries for each prefix tells
+//! whether a declaration takes anything out of scope, so a declaration of a
+//! prefix that is not in scope yet costs no search.
+
+use std::collections::BTreeMap;
 
 use crate::error::Error;
 use crate::id::{NameId, NamespaceId, PrefixId};
 use crate::xotdata::Xot;
 
-/// Prefixes with a number below this are looked up in a table indexed by the
-/// number; the others in a short list.
+/// Prefixes with a number below this are counted in a vector indexed by the
+/// number; the others in a sorted map.
 const DENSE_PREFIXES: u32 = 4096;
 
-/// The level of the namespaces in scope of the node that is serialized.
-const BASE_LEVEL: u32 = 1;
-
-/// The `previous` of an entry that [`NameScope::add_unprefixed`] added, which
-/// did not set the level of its prefix.
-const ADDED: u32 = u32::MAX;
-
-#[derive(Debug, Clone, Copy)]
-struct ScopeEntry {
-    prefix: PrefixId,
-    namespace: NamespaceId,
-    level: u32,
-    // the level that declared the prefix before this entry did, 0 for none,
-    // or ADDED for an entry that add_unprefixed added
-    previous: u32,
-}
+type Entry = (PrefixId, NamespaceId);
 
 #[derive(Debug)]
 pub(crate) struct NameScope {
-    entries: Vec<ScopeEntry>,
-    // the start in `entries` of each level above the base
-    marks: Vec<usize>,
-    // by prefix number, for numbers below DENSE_PREFIXES: the highest level
-    // that declares the prefix
+    // the declarations in scope, in the order of the list of
+    // `FullnameSerializer`
+    entries: Vec<Entry>,
+    // for each element that declares namespaces and is open: where its
+    // declarations begin in `entries`, and where the entries it took out
+    // begin in `taken`
+    marks: Vec<(usize, usize)>,
+    // the entries that the open elements took out of scope, each with the
+    // place it had in `entries`, in the order they were taken out
+    taken: Vec<(usize, Entry)>,
+    // by prefix number, for numbers below DENSE_PREFIXES: the number of
+    // entries for the prefix
     dense: Vec<u32>,
-    // the same for the other prefixes, as (prefix number, level)
-    wide: Vec<(u32, u32)>,
+    // the same for the other prefixes, without the prefixes that have none
+    wide: BTreeMap<u32, u32>,
     empty: PrefixId,
     no_namespace: NamespaceId,
     // whether the namespaces in scope of the node that is serialized were
@@ -69,148 +66,156 @@ impl NameScope {
         let mut scope = NameScope {
             entries: Vec::with_capacity(base.len() + 8),
             marks: Vec::new(),
+            taken: Vec::new(),
             dense: Vec::new(),
-            wide: Vec::new(),
+            wide: BTreeMap::new(),
             empty: xot.empty_prefix_id,
             no_namespace: xot.no_namespace_id,
             base_popped: false,
         };
-        for &(prefix, namespace) in base {
-            scope.declare(prefix, namespace, BASE_LEVEL);
+        for &entry in base {
+            scope.add(entry);
         }
         scope
     }
 
+    /// The number of entries for `prefix`.
     #[inline]
-    fn level(&self, prefix: PrefixId) -> u32 {
+    fn count(&self, prefix: PrefixId) -> u32 {
         let number = prefix.0;
         if number < DENSE_PREFIXES {
             self.dense.get(number as usize).copied().unwrap_or(0)
         } else {
-            self.wide
-                .iter()
-                .find(|(p, _)| *p == number)
-                .map_or(0, |(_, level)| *level)
+            self.wide.get(&number).copied().unwrap_or(0)
         }
     }
 
     #[inline]
-    fn set_level(&mut self, prefix: PrefixId, level: u32) {
+    fn set_count(&mut self, prefix: PrefixId, count: u32) {
         let number = prefix.0;
         if number < DENSE_PREFIXES {
             let index = number as usize;
             if index >= self.dense.len() {
                 self.dense.resize(index + 1, 0);
             }
-            self.dense[index] = level;
-        } else if let Some(entry) = self.wide.iter_mut().find(|(p, _)| *p == number) {
-            entry.1 = level;
+            self.dense[index] = count;
+        } else if count == 0 {
+            self.wide.remove(&number);
         } else {
-            self.wide.push((number, level));
+            self.wide.insert(number, count);
         }
     }
 
+    /// Append an entry.
     #[inline]
-    fn declare(&mut self, prefix: PrefixId, namespace: NamespaceId, level: u32) {
-        let previous = self.level(prefix);
-        self.set_level(prefix, level);
-        self.entries.push(ScopeEntry {
-            prefix,
-            namespace,
-            level,
-            previous,
-        });
+    fn add(&mut self, entry: Entry) {
+        let count = self.count(entry.0);
+        self.set_count(entry.0, count + 1);
+        self.entries.push(entry);
     }
 
-    /// Add the declarations of an element as a new level, in their order.
+    /// Add the declarations of an element, in their order, after taking the
+    /// entries out of scope whose prefix one of them declares.
     ///
-    /// Returns whether there were any: only then is there a level to
+    /// Returns whether there were any: only then is there something to
     /// [`pop`](NameScope::pop) at the end of the element.
     #[inline]
     pub(crate) fn push(
         &mut self,
         declarations: impl Iterator<Item = (PrefixId, NamespaceId)>,
     ) -> bool {
-        let mark = self.entries.len();
-        let level = self.marks.len() as u32 + BASE_LEVEL + 1;
+        let taken = self.taken.len();
+        // where the declarations of this element begin; taking an entry out
+        // moves them one place to the front
+        let mut start = self.entries.len();
         for (prefix, namespace) in declarations {
-            if self.entries.len() == mark {
-                if self.base_popped {
-                    panic!("{}", BASE_POPPED);
-                }
-                self.marks.push(mark);
+            if start == self.entries.len() && self.base_popped {
+                panic!("{}", BASE_POPPED);
             }
-            self.declare(prefix, namespace, level);
+            let count = self.count(prefix);
+            if count > 0 {
+                // the entries for the prefix before this element stay
+                // in scope no longer; a declaration of this element stays
+                let own = self.entries[start..]
+                    .iter()
+                    .filter(|(p, _)| *p == prefix)
+                    .count() as u32;
+                let mut left = count - own;
+                let mut index = start;
+                while left > 0 {
+                    index -= 1;
+                    if self.entries[index].0 == prefix {
+                        let entry = self.entries.remove(index);
+                        self.taken.push((index, entry));
+                        start -= 1;
+                        left -= 1;
+                    }
+                }
+                self.set_count(prefix, own);
+            }
+            self.add((prefix, namespace));
         }
-        self.entries.len() != mark
+        if start == self.entries.len() {
+            return false;
+        }
+        self.marks.push((start, taken));
+        true
     }
 
-    /// Remove the last level that [`push`](NameScope::push) added.
+    /// Remove the declarations that the last [`push`](NameScope::push) that
+    /// returned `true` added, with the entries that were added to them since,
+    /// and put back the entries it took out of scope.
     ///
     /// The walk of a node that was changed in an unusual way can give the end
     /// tag of an element whose start tag it did not give, when it goes on
-    /// after the node that is serialized. [`FullnameSerializer`] then removes
+    /// after the node that is serialized. `FullnameSerializer` then removes
     /// its namespaces in scope, so that later names in a namespace and later
     /// declarations make it panic; this does the same, with the same message.
     #[inline]
     pub(crate) fn pop(&mut self) {
-        let Some(mark) = self.marks.pop() else {
+        let Some((start, taken)) = self.marks.pop() else {
             self.base_popped = true;
             return;
         };
-        for index in (mark..self.entries.len()).rev() {
-            let entry = self.entries[index];
-            // an entry that `add_unprefixed` added did not set a level
-            if entry.previous != ADDED {
-                self.set_level(entry.prefix, entry.previous);
-            }
+        while self.entries.len() > start {
+            let (prefix, _) = self.entries.pop().unwrap();
+            let count = self.count(prefix);
+            self.set_count(prefix, count - 1);
         }
-        self.entries.truncate(mark);
+        while self.taken.len() > taken {
+            let (index, entry) = self.taken.pop().unwrap();
+            self.entries.insert(index, entry);
+            let count = self.count(entry.0);
+            self.set_count(entry.0, count + 1);
+        }
     }
 
-    /// Add the empty prefix for `namespace` to the last level, or to the
-    /// base when there is none, as [`FullnameSerializer::add_empty_prefix`]
-    /// adds it to the last list. The HTML 5 writer uses this for a namespace
-    /// that it writes as the default namespace without a declaration in the
-    /// tree.
+    /// Add the empty prefix for `namespace` after the last entry, as
+    /// `FullnameSerializer::add_empty_prefix` adds it to the last list. The
+    /// HTML 5 writer uses this for a namespace that it writes as the default
+    /// namespace without a declaration in the tree.
     ///
-    /// The entry does not change the level of the empty prefix: a later level
-    /// that declares the empty prefix takes it out of scope, as such a level
-    /// leaves it out of its list, but it takes no entry before it out of
-    /// scope. It goes away with its level.
-    ///
-    /// [`FullnameSerializer::add_empty_prefix`]: super::FullnameSerializer::add_empty_prefix
+    /// The entry takes nothing out of scope. A later element that declares
+    /// the empty prefix takes it out of scope, as that element leaves it out
+    /// of its list. It goes away with the declarations of the element that
+    /// the last [`push`](NameScope::push) that returned `true` was for, or
+    /// stays with the base when there is none.
     #[inline]
     pub(crate) fn add_unprefixed(&mut self, namespace: NamespaceId) {
         if self.base_popped {
             panic!("{}", BASE_POPPED);
         }
-        self.entries.push(ScopeEntry {
-            prefix: self.empty,
-            namespace,
-            level: self.marks.len() as u32 + BASE_LEVEL,
-            previous: ADDED,
-        });
+        self.add((self.empty, namespace));
     }
 
     /// Whether the empty prefix is in scope for `namespace`, as
-    /// [`FullnameSerializer::has_empty_prefix`] says.
-    ///
-    /// [`FullnameSerializer::has_empty_prefix`]: super::FullnameSerializer::has_empty_prefix
+    /// `FullnameSerializer::has_empty_prefix` says.
     #[inline]
     pub(crate) fn has_unprefixed(&self, namespace: NamespaceId) -> bool {
         if self.base_popped {
             panic!("{}", BASE_POPPED);
         }
-        self.entries.iter().rev().any(|entry| {
-            entry.prefix == self.empty && entry.namespace == namespace && self.live(entry)
-        })
-    }
-
-    /// Whether no later level declares the prefix of the entry.
-    #[inline]
-    fn live(&self, entry: &ScopeEntry) -> bool {
-        self.level(entry.prefix) <= entry.level
+        self.entries.contains(&(self.empty, namespace))
     }
 
     /// The prefix to write an element name with: `None` for a name in no
@@ -230,15 +235,15 @@ impl NameScope {
             panic!("{}", BASE_POPPED);
         }
         let mut found = None;
-        for entry in self.entries.iter().rev() {
-            if entry.namespace != namespace || !self.live(entry) {
+        for &(prefix, entry_namespace) in self.entries.iter().rev() {
+            if entry_namespace != namespace {
                 continue;
             }
-            if entry.prefix == self.empty {
+            if prefix == self.empty {
                 return Ok(None);
             }
             if found.is_none() {
-                found = Some(entry.prefix);
+                found = Some(prefix);
             }
         }
         match found {
@@ -264,9 +269,9 @@ impl NameScope {
         if self.base_popped {
             panic!("{}", BASE_POPPED);
         }
-        for entry in self.entries.iter().rev() {
-            if entry.namespace == namespace && entry.prefix != self.empty && self.live(entry) {
-                return Ok(Some(entry.prefix));
+        for &(prefix, entry_namespace) in self.entries.iter().rev() {
+            if entry_namespace == namespace && prefix != self.empty {
+                return Ok(Some(prefix));
             }
         }
         Err(Error::MissingPrefix(
@@ -430,6 +435,7 @@ mod tests {
                 }
             }
         }
+        check_counts(&scope);
         // leave every level, and look again at the base
         while let Some(pushed) = open.pop() {
             expected.pop(pushed);
@@ -599,6 +605,115 @@ mod tests {
         assert!(scope.has_unprefixed(ns2));
         scope.pop();
         assert!(!scope.has_unprefixed(ns2));
+    }
+
+    // the entries and the counts agree with each other
+    fn check_counts(scope: &NameScope) {
+        let mut counts = std::collections::HashMap::new();
+        for (prefix, _) in &scope.entries {
+            *counts.entry(prefix.0).or_insert(0u32) += 1;
+        }
+        for (number, count) in scope.dense.iter().enumerate() {
+            assert_eq!(*count, counts.get(&(number as u32)).copied().unwrap_or(0));
+        }
+        for (number, count) in &scope.wide {
+            assert!(*count > 0);
+            assert_eq!(Some(count), counts.get(number));
+        }
+        for (number, count) in &counts {
+            assert_eq!(scope.count(PrefixId(*number)), *count);
+        }
+    }
+
+    // a prefix declared again by each of many nested elements leaves one
+    // entry in scope, so that a lookup does not grow with the depth
+    #[test]
+    fn test_deep_redeclaration_keeps_one_entry() {
+        let mut xot = Xot::new();
+        let ns = [xot.add_namespace("urn:1"), xot.add_namespace("urn:2")];
+        let names = [xot.add_name_ns("a", ns[0]), xot.add_name_ns("a", ns[1])];
+        let p = xot.add_prefix("p");
+        let q = xot.add_prefix("q");
+        let base = [(p, ns[0]), (q, ns[1])];
+        let mut expected = FullnameSerializer::new(&xot, base.to_vec());
+        let mut scope = NameScope::new(&xot, &base);
+        let depth = 10_000;
+        for level in 0..depth {
+            let declaration = (p, ns[(level + 1) % 2]);
+            expected.push(vec![declaration]);
+            assert!(scope.push([declaration].into_iter()));
+            assert_eq!(scope.entries.len(), 2);
+            if level % 1000 == 0 {
+                for name in names {
+                    assert_eq!(
+                        scope.element_prefix(&xot, name).map_err(|e| e.to_string()),
+                        expected.element_prefix(name).map_err(|e| e.to_string())
+                    );
+                }
+            }
+        }
+        for _ in 0..depth {
+            expected.pop(true);
+            scope.pop();
+        }
+        assert_eq!(scope.entries, base.to_vec());
+        assert!(scope.marks.is_empty());
+        assert!(scope.taken.is_empty());
+        check_counts(&scope);
+    }
+
+    // many prefixes for one namespace, with numbers on both sides of
+    // DENSE_PREFIXES, declared again by nested elements
+    #[test]
+    fn test_many_prefixes_for_one_namespace() {
+        let mut xot = Xot::new();
+        let ns1 = xot.add_namespace("urn:1");
+        let ns2 = xot.add_namespace("urn:2");
+        let names = [xot.add_name_ns("a", ns1), xot.add_name_ns("a", ns2)];
+        let prefixes: Vec<_> = (0..5000)
+            .map(|i| xot.add_prefix(&format!("p{}", i)))
+            .collect();
+        let base: Vec<_> = prefixes.iter().map(|p| (*p, ns1)).collect();
+        let mut expected = FullnameSerializer::new(&xot, base.clone());
+        let mut scope = NameScope::new(&xot, &base);
+        check_counts(&scope);
+        let mut open = 0;
+        for (i, k) in [4999, 10, 4500, 4999, 0, 4096, 4095]
+            .into_iter()
+            .enumerate()
+        {
+            let mut declarations = vec![(prefixes[k], ns2)];
+            if i % 2 == 0 {
+                declarations.push((prefixes[k], ns1));
+                declarations.push((xot.empty_prefix(), ns2));
+            }
+            expected.push(declarations.clone());
+            assert!(scope.push(declarations.into_iter()));
+            open += 1;
+            check_counts(&scope);
+            for name in names {
+                assert_eq!(
+                    scope.element_prefix(&xot, name).unwrap(),
+                    expected.element_prefix(name).unwrap()
+                );
+                assert_eq!(
+                    scope.attribute_prefix(&xot, name).unwrap(),
+                    expected.attribute_prefix(name).unwrap()
+                );
+            }
+            if i == 3 {
+                scope.pop();
+                expected.pop(true);
+                open -= 1;
+                check_counts(&scope);
+            }
+        }
+        for _ in 0..open {
+            scope.pop();
+            expected.pop(true);
+        }
+        assert_eq!(scope.entries, base);
+        check_counts(&scope);
     }
 
     #[test]
