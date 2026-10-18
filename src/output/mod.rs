@@ -2,6 +2,7 @@
 //!
 //! This module lets you control serialization in various ways.
 mod common;
+pub(crate) mod escape;
 mod fullname;
 pub mod html5;
 mod html5_serializer;

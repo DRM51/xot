@@ -551,6 +551,21 @@
   and the bytes are the same as before for every parameter and for writers
   that fail.
 
+- The XML and HTML 5 serializers escape a text or an attribute value by
+  looking at its bytes for the few that need a replacement, and copy the
+  runs between them, where they went through the characters one by one and
+  pushed each to a new string. A value with nothing to escape is used as it
+  is, and the check that a value has only characters XML 1.0 allows looks at
+  the same bytes. The escaped text, the character references and the errors
+  are the same as before. On a generated document of 25 megabytes with 2.0M
+  nodes (release, a 64 KiB buffered writer, load 5 to 8),
+  `Xot::serialize_xml_write` takes 319 ms instead of 565 ms (0.56 to 0.57,
+  where walking the tree alone gave 0.63 to 0.65) with 6.1M allocations and
+  2.1M reallocations instead of 14.7M and 2.6M; with CDATA sections for
+  every element with text it takes 345 ms instead of 612 ms, and HTML 5
+  serialization 302 ms instead of 525 ms. `Xot::to_string` takes 149 ns for
+  a node instead of 264 ns.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text

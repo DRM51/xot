@@ -1,9 +1,11 @@
 use std::borrow::Cow;
+#[cfg(test)]
 use std::fmt::Write;
 
 use xmlparser::XmlCharExt;
 
 use crate::error::ParseError;
+use crate::output::escape;
 use crate::output::Normalizer;
 use crate::Span;
 
@@ -31,6 +33,7 @@ pub(crate) enum Escapes {
     },
 }
 
+#[cfg(test)]
 impl Escapes {
     fn in_text(self, c: char) -> bool {
         match self {
@@ -55,10 +58,12 @@ impl Escapes {
 /// and XML 1.1 requires the control characters #x7F to #x9F to be escaped.
 /// The serialization specification requires escaping them whatever the XML
 /// version, as an XML 1.1 document can include an XML 1.0 entity.
+#[cfg(test)]
 fn is_xml11_line_end_or_control(c: char) -> bool {
     matches!(c, '\u{7F}'..='\u{9F}' | '\u{2028}')
 }
 
+#[cfg(test)]
 fn push_char_ref(result: &mut String, c: char) {
     // writing to a string cannot fail
     let _ = write!(result, "&#x{:X};", u32::from(c));
@@ -264,6 +269,79 @@ pub(crate) fn serialize_text<'a, N: Normalizer>(
     unescaped_gt: bool,
     escapes: Escapes,
 ) -> Cow<'a, str> {
+    let normalized_content = normalizer.normalize(content);
+    let kinds = match escapes {
+        Escapes::RoundTrip { .. } => escape::TEXT,
+        Escapes::MarkupOnly => escape::MARKUP_TEXT,
+    };
+    let bytes = normalized_content.as_bytes();
+    let start = escape::first_special(bytes, 0, kinds);
+    if start == bytes.len() {
+        return normalized_content;
+    }
+    let mut result = String::with_capacity(bytes.len() + bytes.len() / 8 + 16);
+    match escapes {
+        Escapes::RoundTrip { unescaped_cr } => escape::push_text(
+            &mut result,
+            &normalized_content,
+            start,
+            unescaped_gt,
+            unescaped_cr,
+        ),
+        Escapes::MarkupOnly => {
+            escape::push_markup_text(&mut result, &normalized_content, start, unescaped_gt)
+        }
+    }
+    result.into()
+}
+
+pub(crate) fn serialize_cdata<'a, N: Normalizer>(
+    content: Cow<'a, str>,
+    normalizer: &N,
+    escapes: Escapes,
+) -> Cow<'a, str> {
+    let normalized_content = normalizer.normalize(content);
+    let mut result = String::with_capacity(normalized_content.len() + 16);
+    escape::push_cdata(&mut result, &normalized_content, escapes);
+    result.into()
+}
+
+pub(crate) fn serialize_attribute<'a, N: Normalizer>(
+    content: Cow<'a, str>,
+    normalizer: &N,
+    escapes: Escapes,
+) -> Cow<'a, str> {
+    let normalized_content = normalizer.normalize(content);
+    let kinds = match escapes {
+        Escapes::RoundTrip { .. } => escape::ATTRIBUTE,
+        Escapes::MarkupOnly => escape::MARKUP_ATTRIBUTE,
+    };
+    let bytes = normalized_content.as_bytes();
+    let start = escape::first_special(bytes, 0, kinds);
+    if start == bytes.len() {
+        return normalized_content;
+    }
+    let mut result = String::with_capacity(bytes.len() + bytes.len() / 8 + 16);
+    match escapes {
+        Escapes::RoundTrip { .. } => {
+            escape::push_attribute(&mut result, &normalized_content, start)
+        }
+        Escapes::MarkupOnly => {
+            escape::push_markup_attribute(&mut result, &normalized_content, start)
+        }
+    }
+    result.into()
+}
+
+/// The escaping that [`serialize_text`] and the others replaced, character by
+/// character, as the oracle of their tests.
+#[cfg(test)]
+pub(crate) fn old_serialize_text<'a, N: Normalizer>(
+    content: Cow<'a, str>,
+    normalizer: &N,
+    unescaped_gt: bool,
+    escapes: Escapes,
+) -> Cow<'a, str> {
     let mut result = String::new();
     let mut change = false;
     // if we had normalized_iter on the trait we avoid this string allocation
@@ -313,7 +391,8 @@ pub(crate) fn serialize_text<'a, N: Normalizer>(
     }
 }
 
-pub(crate) fn serialize_cdata<'a, N: Normalizer>(
+#[cfg(test)]
+pub(crate) fn old_serialize_cdata<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
     escapes: Escapes,
@@ -356,7 +435,8 @@ pub(crate) fn serialize_cdata<'a, N: Normalizer>(
     result.into()
 }
 
-pub(crate) fn serialize_attribute<'a, N: Normalizer>(
+#[cfg(test)]
+pub(crate) fn old_serialize_attribute<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
     escapes: Escapes,

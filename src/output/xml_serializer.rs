@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::io;
 
-use xmlparser::XmlCharExt;
-
 use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
 use crate::error::Error;
 use crate::id::NameId;
@@ -10,6 +8,7 @@ use crate::output::{NoopNormalizer, Normalizer};
 use crate::parse::is_allowed_declaration;
 use crate::xotdata::{Node, Xot, XMLNS_NAMESPACE};
 
+use super::escape::first_not_xml_char;
 use super::fullname::FullnameSerializer;
 use super::{Output, OutputToken, Pretty, TokenSerializeParameters};
 
@@ -105,7 +104,7 @@ impl<'a, N: Normalizer> XmlSerializer<'a, N> {
             Output::Prefix(_, namespace_id) => self.xot.namespace_str(*namespace_id),
             _ => return Ok(()),
         };
-        let Some(c) = value.chars().find(|c| !c.is_xml_char()) else {
+        let Err(c) = first_not_xml_char(value, 0) else {
             return Ok(());
         };
         let place = match output {

@@ -4,6 +4,7 @@ use std::io;
 use crate::entity::{serialize_attribute, serialize_cdata, serialize_text, Escapes};
 use crate::error::Error;
 use crate::id::NameId;
+use crate::output::escape;
 use crate::output::{NoopNormalizer, Normalizer};
 use crate::xotdata::{Node, Xot};
 
@@ -321,6 +322,44 @@ pub(crate) fn serialize_text_html<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
 ) -> Cow<'a, str> {
+    let normalized_content = normalizer.normalize(content);
+    let bytes = normalized_content.as_bytes();
+    let start = escape::first_special(bytes, 0, escape::HTML_TEXT);
+    if start == bytes.len() {
+        return normalized_content;
+    }
+    let mut result = String::with_capacity(bytes.len() + bytes.len() / 8 + 16);
+    escape::push_html_text(&mut result, &normalized_content, start);
+    result.into()
+}
+
+pub(crate) fn serialize_attribute_html<'a, N: Normalizer>(
+    content: Cow<'a, str>,
+    normalizer: &N,
+) -> Cow<'a, str> {
+    let normalized_content = normalizer.normalize(content);
+    let bytes = normalized_content.as_bytes();
+    let start = escape::first_special(bytes, 0, escape::HTML_ATTRIBUTE);
+    if start == bytes.len() {
+        return normalized_content;
+    }
+    let mut result = String::with_capacity(bytes.len() + bytes.len() / 8 + 16);
+    escape::push_html_attribute(&mut result, &normalized_content, start);
+    result.into()
+}
+
+pub(crate) fn serialize_text_no_escape<'a, N: Normalizer>(
+    content: Cow<'a, str>,
+    normalizer: &N,
+) -> Cow<'a, str> {
+    normalizer.normalize(content)
+}
+
+#[cfg(test)]
+pub(crate) fn old_serialize_text_html<'a, N: Normalizer>(
+    content: Cow<'a, str>,
+    normalizer: &N,
+) -> Cow<'a, str> {
     let mut result = String::new();
     let mut change = false;
     // if we had normalized_iter on the trait we avoid this string allocation
@@ -351,7 +390,8 @@ pub(crate) fn serialize_text_html<'a, N: Normalizer>(
     }
 }
 
-pub(crate) fn serialize_attribute_html<'a, N: Normalizer>(
+#[cfg(test)]
+pub(crate) fn old_serialize_attribute_html<'a, N: Normalizer>(
     content: Cow<'a, str>,
     normalizer: &N,
 ) -> Cow<'a, str> {
@@ -386,13 +426,6 @@ pub(crate) fn serialize_attribute_html<'a, N: Normalizer>(
     } else {
         result.into()
     }
-}
-
-pub(crate) fn serialize_text_no_escape<'a, N: Normalizer>(
-    content: Cow<'a, str>,
-    normalizer: &N,
-) -> Cow<'a, str> {
-    normalizer.normalize(content)
 }
 
 #[cfg(test)]
