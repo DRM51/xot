@@ -2,13 +2,12 @@ use std::io::Write;
 
 use crate::error::Error;
 use crate::output::{
-    output_walk, Html5Elements, Html5Serializer, Output, OutputToken, TokenSerializeParameters,
-    XmlSerializer,
+    output_walk, reset_large_scratch, write_xml, Html5Elements, Html5Serializer, Output,
+    OutputToken, TokenSerializeParameters, XmlRenderer, SCRATCH_CAPACITY,
 };
 use crate::output::{NoopNormalizer, Normalizer};
 use crate::output::{Pretty, PrettyOutputToken};
-use crate::xmlname::NameStrInfo;
-use crate::{output, NameId, Value};
+use crate::{output, NameId};
 
 use crate::xotdata::{Node, Xot};
 
@@ -314,40 +313,7 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
         w: &mut impl Write,
         normalizer: N,
     ) -> Result<(), Error> {
-        if let Some(declaration) = parameters.declaration {
-            declaration.serialize(w)?;
-        }
-        if let Some(doctype) = parameters.doctype {
-            // if we are in a document node, we look for the document_element,
-            // otherwise we take the current element, if possible
-            let node = match self.value(node) {
-                Value::Document => self.document_element(node)?,
-                Value::Element(_) => node,
-                _ => return Err(Error::NotElement(node)),
-            };
-            // now take the full name of the element; we can unwrap as we
-            // know it's an element now
-            let name = self.node_name_ref(node)?.unwrap();
-            let name = name.full_name();
-            doctype.serialize(name.as_ref(), w)?;
-        }
-        let outputs = output_walk(self, node);
-        let mut serializer = XmlSerializer::new(
-            self,
-            node,
-            TokenSerializeParameters {
-                cdata_section_elements: parameters.cdata_section_elements,
-                unescaped_gt: parameters.unescaped_gt,
-                unescaped_cr: parameters.unescaped_cr,
-            },
-            normalizer,
-        );
-        if let Some(indentation) = parameters.indentation {
-            serializer.serialize_pretty(w, outputs, &indentation.suppress)?;
-        } else {
-            serializer.serialize(w, outputs)?;
-        }
-        Ok(())
+        write_xml(self, parameters, node, w, normalizer)
     }
 
     /// Get HTML 5 serialization API.
@@ -399,10 +365,14 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
         normalizer: N,
     ) -> impl Iterator<Item = (Node, Output<'a>, OutputToken)> + 'a {
         let outputs = output_walk(self, node);
-        let mut serializer = XmlSerializer::new(self, node, parameters, normalizer);
+        let mut renderer = XmlRenderer::new(self, node, parameters, normalizer);
+        let mut scratch = String::with_capacity(SCRATCH_CAPACITY);
         outputs.map(move |(node, output)| {
-            let rendered = serializer.render_output(node, &output).unwrap();
-            (node, output, rendered)
+            scratch.clear();
+            let space = renderer.token(node, &output, &mut scratch, false).unwrap();
+            let text = scratch.as_str().to_owned();
+            reset_large_scratch(&mut scratch);
+            (node, output, OutputToken { space, text })
         })
     }
 
@@ -430,7 +400,8 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
         normalizer: N,
     ) -> impl Iterator<Item = (Node, Output<'a>, PrettyOutputToken)> + 'a {
         let outputs = output_walk(self, node);
-        let mut serializer = XmlSerializer::new(self, node, parameters, normalizer);
+        let mut renderer = XmlRenderer::new(self, node, parameters, normalizer);
+        let mut scratch = String::with_capacity(SCRATCH_CAPACITY);
         let mut pretty = Pretty::new(
             self,
             |name| suppress_elements.contains(&name),
@@ -438,13 +409,16 @@ assert_eq!(s, "<doc>\u{1E0D}\u{0307}</doc>");
         );
         outputs.map(move |(node, output)| {
             let (indentation, newline) = pretty.prettify(node, &output);
-            let rendered = serializer.render_output(node, &output).unwrap();
+            scratch.clear();
+            let space = renderer.token(node, &output, &mut scratch, false).unwrap();
+            let text = scratch.as_str().to_owned();
+            reset_large_scratch(&mut scratch);
             (
                 node,
                 output,
                 PrettyOutputToken {
-                    text: rendered.text,
-                    space: rendered.space,
+                    text,
+                    space,
                     indentation,
                     newline,
                 },

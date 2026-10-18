@@ -26,4 +26,4 @@ pub(crate) use pretty::Pretty;
 pub use pretty::PrettyOutputToken;
 pub use serializer::{Output, OutputToken};
 pub(crate) use walk::output_walk;
-pub(crate) use xml_serializer::XmlSerializer;
+pub(crate) use xml_serializer::{reset_large_scratch, write_xml, XmlRenderer, SCRATCH_CAPACITY};

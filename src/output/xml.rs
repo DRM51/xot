@@ -119,7 +119,7 @@ pub struct Declaration {
 }
 
 impl Declaration {
-    pub(crate) fn serialize(&self, w: &mut impl Write) -> Result<(), std::io::Error> {
+    pub(crate) fn serialize(&self, w: &mut (impl Write + ?Sized)) -> Result<(), std::io::Error> {
         w.write_all(b"<?xml version=\"1.0\"")?;
         if let Some(encoding) = &self.encoding {
             w.write_all(b" encoding=\"")?;
@@ -164,7 +164,11 @@ pub enum DocType {
 }
 
 impl DocType {
-    pub(crate) fn serialize(&self, name: &str, w: &mut impl Write) -> Result<(), std::io::Error> {
+    pub(crate) fn serialize(
+        &self,
+        name: &str,
+        w: &mut (impl Write + ?Sized),
+    ) -> Result<(), std::io::Error> {
         w.write_all(b"<!DOCTYPE ")?;
         w.write_all(name.as_bytes())?;
         match self {

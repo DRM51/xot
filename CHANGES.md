@@ -566,6 +566,27 @@
   serialization 302 ms instead of 525 ms. `Xot::to_string` takes 149 ns for
   a node instead of 264 ns.
 
+- The XML serializer renders each token into one string that it clears and
+  uses again for the next token, writes prefixed names in pieces where it
+  formatted them, and takes the indentation from a constant of spaces. A
+  string that one large token made grow beyond 1,048,576 bytes is given
+  back after that token. `Xot::tokens` and `Xot::pretty_tokens` render into such
+  a string too and copy each token out of it. The writer gets the same calls
+  with the same bytes as before, also when a token fails a check or the
+  writer fails, and the errors are the same. On a generated document of 25
+  megabytes with 2.0M nodes (release, interleaved, 18 rounds in each of 2
+  runs, load 5 to 7), `Xot::serialize_xml_write` into a 64 KiB buffered
+  writer takes 102 to 103 ms instead of 557 to 562 ms (0.18), with 10
+  allocations and 1 reallocation instead of 14.7M and 2.6M; indented it
+  takes 128 ms instead of 584 to 586 ms (0.22), and with CDATA sections for
+  every element with text 109 ms instead of 606 to 614 ms (0.18).
+  `Xot::to_string` takes 101 ms instead of 525 to 530 ms (0.19),
+  `Xot::tokens` 144 ms instead of 491 to 495 ms (0.29) with one allocation
+  for each token, and `Xot::pretty_tokens` 167 to 168 ms instead of 518 to
+  519 ms (0.32). Into a file that is not buffered, the output of 2.5
+  megabytes of a smaller document takes 358 ms instead of 417 ms (0.86),
+  where the calls to the file, the same as before, take most of the time.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text

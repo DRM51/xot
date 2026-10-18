@@ -26,7 +26,7 @@ pub(crate) enum Escapes {
     /// carriage return cannot appear in XML 1.0, not even as character
     /// references, so they are left as they are here. Writing XML output
     /// with them is an error, which the XML serializer reports before it
-    /// writes the value (see `XmlSerializer::serialize_node`).
+    /// writes the value (see `XmlRenderer::token`).
     RoundTrip {
         /// Write a carriage return in text as is.
         unescaped_cr: bool,
