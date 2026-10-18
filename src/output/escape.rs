@@ -110,10 +110,12 @@ pub(crate) fn first_not_xml_char(s: &str, kinds: u16) -> Result<usize, char> {
 }
 
 /// Write the character reference `&#xH;` for `c`, with the digits in upper
-/// case and no leading zeros, as `write!(out, "&#x{:X};", c)` does.
+/// case and no leading zeros, as `write!(out, "&#x{:X};", c)` does. Any
+/// `u32` fits: the callers give the value of a `char`, up to `0x10FFFF`.
 #[inline]
 pub(crate) fn push_char_ref(out: &mut String, c: u32) {
-    let mut buf = [0u8; 11];
+    // "&#x", up to 8 digits and ";"
+    let mut buf = [0u8; 12];
     let mut i = buf.len();
     i -= 1;
     buf[i] = b';';
@@ -652,7 +654,18 @@ mod tests {
 
     #[test]
     fn char_ref() {
-        for c in [0u32, 9, 0xD, 0x7F, 0x85, 0x2028, 0x10FFFF] {
+        for c in [
+            0u32,
+            9,
+            0xD,
+            0x7F,
+            0x85,
+            0x2028,
+            0x10FFFF,
+            0x0FFF_FFFF,
+            0x1000_0000,
+            u32::MAX,
+        ] {
             let mut out = String::new();
             push_char_ref(&mut out, c);
             assert_eq!(out, format!("&#x{:X};", c));
