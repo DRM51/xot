@@ -269,6 +269,15 @@ fn nth(xot: &Xot, doc: Node, i: usize) -> Node {
     xot.all_descendants(doc).nth(i).unwrap()
 }
 
+fn element_named(xot: &Xot, doc: Node, local: &str) -> Node {
+    xot.all_descendants(doc)
+        .find(|n| {
+            xot.element(*n)
+                .is_some_and(|e| xot.local_name_str(e.name()) == local)
+        })
+        .unwrap()
+}
+
 type Change = fn(&mut Xot, Node);
 
 /// The changes of the structure, each applied to a tree parsed from `DOC`.
@@ -315,6 +324,17 @@ fn structural_changes() -> Vec<(&'static str, Change)> {
             let n = xot.add_name("new");
             xot.attributes_mut(r).insert(n, "v".to_string());
         }),
+        ("first attribute", |xot, doc| {
+            let c = element_named(xot, doc, "c");
+            let n = xot.add_name("new");
+            xot.attributes_mut(c).insert(n, "v".to_string());
+        }),
+        ("first namespace", |xot, doc| {
+            let c = element_named(xot, doc, "c");
+            let p = xot.add_prefix("q");
+            let ns = xot.add_namespace("urn:q");
+            xot.namespaces_mut(c).insert(p, ns);
+        }),
         ("remove attribute", |xot, doc| {
             let r = xot.document_element(doc).unwrap();
             let n = xot.add_name("a");
@@ -360,7 +380,7 @@ fn structural_changes() -> Vec<(&'static str, Change)> {
 #[test]
 fn structural_changes_drop_the_tree_and_the_trees_after_it() {
     let changes = structural_changes();
-    assert_eq!(changes.len(), 16);
+    assert_eq!(changes.len(), 18);
     for (name, change) in changes {
         // the changed tree first, then one in the middle
         for head in [false, true] {

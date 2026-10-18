@@ -1545,6 +1545,27 @@ impl<T> Arena<T> {
         Ok(())
     }
 
+    /// [`Arena::checked_prepend`] of `new_child`, a node that
+    /// [`Arena::new_node`] has just made, which panics where that fails.
+    ///
+    /// Such a node is not `parent`, is not removed, and has no parent, no
+    /// siblings and no children, so it passes the checks of
+    /// `checked_prepend` but the one for a removed `parent`, and takes its
+    /// simple path when `parent` agrees; this takes that path without the
+    /// checks. In any other case it calls `checked_prepend`.
+    #[inline]
+    pub(crate) fn prepend_new(&mut self, parent: NodeId, new_child: NodeId) {
+        let (p, c) = (parent.index1.get(), new_child.index1.get());
+        debug_assert_eq!(self.fields(c), (false, 0, 0, 0, 0));
+        let first = self.slot(p).link[FIRST];
+        if self.is_simple_insert(c, p, 0, first) {
+            self.insert_simple(c, p, 0, first);
+            self.watch2(p, c);
+        } else {
+            self.checked_prepend(parent, new_child).unwrap();
+        }
+    }
+
     /// [`Arena::checked_prepend`] without [`Arena::watch2`].
     #[inline(never)]
     fn checked_prepend_unwatched(

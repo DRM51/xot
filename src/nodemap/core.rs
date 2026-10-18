@@ -320,7 +320,7 @@ where
             // we need to insert a new node
             Err(insertion_point) => {
                 let node = self.xot.arena.new_node(A::create(key, value));
-                self.attach(insertion_point, node);
+                self.attach_new(insertion_point, node);
                 None
             }
         }
@@ -378,6 +378,19 @@ where
                 .arena
                 .checked_prepend(self.parent.get(), node)
                 .unwrap();
+        }
+    }
+
+    /// [`attach`](Self::attach) of a node that `Arena::new_node` has just
+    /// made.
+    fn attach_new(&mut self, insertion_point: Option<Node>, node: NodeId) {
+        if let Some(insertion_point) = insertion_point {
+            self.xot
+                .arena
+                .checked_insert_after(insertion_point.get(), node)
+                .unwrap();
+        } else {
+            self.xot.arena.prepend_new(self.parent.get(), node);
         }
     }
 
@@ -465,7 +478,7 @@ where
             // node inserted last, if any
             keys |= bit;
             let node = self.xot.arena.new_node(A::create(key, value));
-            self.attach(insertion_point, node);
+            self.attach_new(insertion_point, node);
             insertion_point = Some(Node::new(node));
         }
     }

@@ -689,11 +689,17 @@
   19.2 ns, 1.042 (1.035 to 1.067), and adding a namespace node with
   `append_namespace_node` 1.033 (1.014 to 1.057); `attributes_mut().insert`
   of a second attribute 1.004 (0.989 to 1.014), and of the first attribute
-  of an element 23.7 ns instead of 21.6 ns, 1.097 (1.094 to 1.106). That
-  last difference does not come from the comparison: the same program with
-  the comparison taken out of `prepend`, which places the first attribute,
-  read 1.110, and with no tree kept 1.100, so it comes from where the code
-  lands. With a small kept tree, 2,000,000 appends to 1,000 elements in
+  of an element 22.5 to 22.7 ns instead of 21.4 to 21.6 ns, 1.047 to 1.051
+  in 3 more runs of 31 to 41 rounds at load 6, where the copy of the
+  program before the change read 0.995 to 1.009. `attributes_mut().insert`,
+  `namespaces_mut().insert` and `extend` of these maps put a new node that
+  goes first among the children of the element there without the checks
+  of `prepend`, which such a node passes; through `prepend` the first
+  attribute took 1.060 to 1.106. That difference did not come from the
+  comparison: the same program with the comparison taken out of `prepend`
+  read 1.110, and with no tree kept 1.100, while `prepend` in one piece,
+  without a wrapper that compares, read 1.072 to 1.081. With a small kept
+  tree, 2,000,000 appends to 1,000 elements in
   turn take 16.7 to 16.9 ns each instead of 16.4 to 16.5 ns (1.018 to
   1.027). Removing 200,000 small parsed documents one after another, each
   of which drops its kept tree, takes 32.1 to 32.6 ns a document instead
