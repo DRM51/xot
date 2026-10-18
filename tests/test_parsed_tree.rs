@@ -474,3 +474,29 @@ fn a_dropped_tree_is_never_kept_again() {
     assert_eq!(tree_a.index(detached), index);
     assert_eq!(tree_a.node(index.unwrap()), Some(detached));
 }
+
+// inserting an element after or before its own descendant panics after the
+// element was detached; the tree it was detached from is dropped all the same
+#[test]
+fn an_insert_that_panics_after_its_detach_drops_the_tree() {
+    for after in [true, false] {
+        let mut xot = Xot::new();
+        let doc = xot.parse("<r><a><b/></a></r>").unwrap();
+        let r = xot.document_element(doc).unwrap();
+        let a = xot.first_child(r).unwrap();
+        let b = xot.first_child(a).unwrap();
+        check_tree(&xot, doc);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if after {
+                let _ = xot.insert_after(b, a);
+            } else {
+                let _ = xot.insert_before(b, a);
+            }
+        }));
+        assert!(result.is_err());
+        assert_eq!(xot.parent(a), None);
+        assert_eq!(xot.parsed_tree(doc), None);
+        assert_eq!(xot.parsed_tree(b), None);
+        assert_eq!(xot.dropped_parsed_trees().len(), 1);
+    }
+}

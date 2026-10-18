@@ -130,9 +130,15 @@
 //! Changes of the data in the slots change no structure and keep the trees.
 //!
 //! Each operation that changes the structure is a thin wrapper: it calls
-//! the operation itself, which does not look at the kept trees and is
-//! compiled as it was without them, then `watch` or `watch2` when the
-//! operation changed something.
+//! the operation itself, then `watch` or `watch2` when the operation changed
+//! something. The operation itself does not look at the kept trees, except
+//! that `checked_append`, `insert_after` and `insert_before` detach the node
+//! they move with [`Arena::detach`], which looks: the tree that the node
+//! leaves is dropped before the tree it joins, and the inserts can panic
+//! after the detach when the node is an ancestor of the sibling, when the
+//! tree the node left must not stay kept. `remove` and `remove_subtree`
+//! detach without a look, as the wrapper looks at the same node and nothing
+//! can fail in between.
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU32, NonZeroUsize};
 
@@ -1377,10 +1383,10 @@ impl<T> Arena<T> {
     }
 
     // The operations that change the structure are each a wrapper that
-    // calls the operation, which does not look at the kept trees, then
-    // `watch` or `watch2` when the operation changed something. The check
-    // then runs in the caller, after the operation has given its registers
-    // back, and the operation is compiled as it was without kept trees: a
+    // calls the operation, then `watch` or `watch2` when the operation
+    // changed something (see "Kept trees" in the module documentation for
+    // the detaches inside operations that look). The check then runs
+    // in the caller, after the operation has given its registers back: a
     // check inside the operation took more registers there and made each
     // append about 1 ns slower.
 
@@ -1472,6 +1478,9 @@ impl<T> Arena<T> {
             self.insert_simple(c, p, last, 0);
             return Ok(());
         }
+        // a detach that looks at the kept trees, so that the tree that
+        // `new_child` leaves is dropped before the one it joins, as in the
+        // inserts
         self.detach(new_child);
         let parent = Link::known(parent);
         let last_child = self.link_of(parent, LAST);
@@ -1611,6 +1620,9 @@ impl<T> Arena<T> {
             self.insert_simple(n, parent, s, next);
             return Ok(());
         }
+        // a detach that looks at the kept trees: `insert_with_neighbors`
+        // panics when `new_sibling` is an ancestor of `sibling`, which is not
+        // checked, and the tree it was detached from must be dropped then
         self.detach(new_sibling);
         let sibling = Link::known(sibling);
         let (next_sibling, parent) = {
@@ -1661,6 +1673,9 @@ impl<T> Arena<T> {
             self.insert_simple(n, parent, previous, s);
             return Ok(());
         }
+        // a detach that looks at the kept trees: `insert_with_neighbors`
+        // panics when `new_sibling` is an ancestor of `sibling`, which is not
+        // checked, and the tree it was detached from must be dropped then
         self.detach(new_sibling);
         let sibling = Link::known(sibling);
         let (previous_sibling, parent) = {
@@ -1680,7 +1695,7 @@ impl<T> Arena<T> {
         self.watch(node_id.index1.get());
     }
 
-    /// [`Arena::remove`] without its last [`Arena::watch`].
+    /// [`Arena::remove`] without [`Arena::watch`].
     #[inline(never)]
     fn remove_unwatched(&mut self, node_id: NodeId) {
         let node = Link::known(node_id);
@@ -1700,7 +1715,8 @@ impl<T> Arena<T> {
         self.debug_assert_triangle_nodes(node, last_child, Link::NONE);
 
         assert_eq!(first_child.is_some(), last_child.is_some());
-        self.detach(node_id);
+        // the wrapper looks at `node_id`
+        self.detach_unwatched(node_id);
         if first_child.is_some() && last_child.is_some() {
             self.detach_from_siblings(first_child, last_child);
             self.transplant(
@@ -1727,10 +1743,11 @@ impl<T> Arena<T> {
         self.watch(node_id.index1.get());
     }
 
-    /// [`Arena::remove_subtree`] without its last [`Arena::watch`].
+    /// [`Arena::remove_subtree`] without [`Arena::watch`].
     #[inline(never)]
     fn remove_subtree_unwatched(&mut self, node_id: NodeId) {
-        self.detach(node_id);
+        // the wrapper looks at `node_id`
+        self.detach_unwatched(node_id);
         // a preorder traversal, by position: the first child, else the next
         // sibling, else the next sibling of the nearest ancestor that has
         // one. It knows the parent and the previous sibling of the node it
