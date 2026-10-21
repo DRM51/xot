@@ -4,6 +4,7 @@ use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use xmlparser::{ElementEnd, StrSpan, Stream, TextPos, Token, Tokenizer};
 
 use crate::arena::NodeId;
+use crate::dtd;
 use crate::encoding::decode;
 use crate::entity::{normalize_line_ends, parse_attribute_in, parse_text_in};
 use crate::error::ParseError;
@@ -39,6 +40,113 @@ fn prefixed_name(prefix: StrSpan<'_>, name: StrSpan<'_>) -> String {
     }
 }
 
+/// What the document type declaration of the document says that the parser
+/// does not apply, but has to know about (see `dtd::scan`).
+struct Dtd {
+    /// The general entities that the internal subset declares.
+    entities: Vec<Box<str>>,
+    /// The attributes, by element name and then attribute name as written,
+    /// that the internal subset declares with a type other than `CDATA`.
+    typed: HashMap<Box<str>, Vec<Box<str>>>,
+    /// Whether the declaration has an external identifier, so that an
+    /// external subset, which is never read, can declare any entity.
+    external: bool,
+    /// The buffer in which a prefixed name is written to look it up.
+    name: String,
+}
+
+impl Dtd {
+    fn new(subset: dtd::InternalSubset, external: bool) -> Self {
+        let mut typed: HashMap<Box<str>, Vec<Box<str>>> = HashMap::new();
+        for (element, attribute) in subset.typed {
+            typed.entry(element).or_default().push(attribute);
+        }
+        Dtd {
+            entities: subset.entities,
+            typed,
+            external,
+            name: String::new(),
+        }
+    }
+
+    /// `error`, from the references in `value`, as `DtdUnsupported` if it is
+    /// a reference to an entity that the document type declaration can
+    /// declare: one that the internal subset declares, or any entity if
+    /// there is an external subset. A character reference keeps its error.
+    #[cold]
+    #[inline(never)]
+    fn entity_error(&self, error: ParseError, value: StrSpan<'_>) -> ParseError {
+        if let ParseError::InvalidEntity(name, span) = &error {
+            let at = span.start.wrapping_sub(value.start());
+            let is_character_reference = value
+                .as_str()
+                .get(at..)
+                .is_some_and(|tail| tail.starts_with("&#"));
+            if !is_character_reference
+                && (self.external || self.entities.iter().any(|e| **e == **name))
+            {
+                return ParseError::DtdUnsupported(*span);
+            }
+        }
+        error
+    }
+
+    /// Whether the attribute `attribute_prefix:attribute` of the element
+    /// `element_prefix:element`, names as written, is declared with a type
+    /// other than `CDATA`.
+    fn is_typed(
+        &mut self,
+        element_prefix: &str,
+        element: &str,
+        attribute_prefix: &str,
+        attribute: &str,
+    ) -> bool {
+        if self.typed.is_empty() {
+            return false;
+        }
+        let attributes = if element_prefix.is_empty() {
+            self.typed.get(element)
+        } else {
+            self.name.clear();
+            self.name.push_str(element_prefix);
+            self.name.push(':');
+            self.name.push_str(element);
+            self.typed.get(self.name.as_str())
+        };
+        let Some(attributes) = attributes else {
+            return false;
+        };
+        attributes.iter().any(|written| {
+            if attribute_prefix.is_empty() {
+                **written == *attribute
+            } else {
+                written.len() == attribute_prefix.len() + 1 + attribute.len()
+                    && written.starts_with(attribute_prefix)
+                    && written[attribute_prefix.len()..].starts_with(':')
+                    && written.ends_with(attribute)
+            }
+        })
+    }
+}
+
+/// `error`, from the references in `value`, as the document type
+/// declaration `dtd` makes it (see `Dtd::entity_error`).
+#[cold]
+#[inline(never)]
+fn entity_error(dtd: &Option<Box<Dtd>>, error: ParseError, value: StrSpan<'_>) -> ParseError {
+    match dtd {
+        Some(dtd) => dtd.entity_error(error, value),
+        None => error,
+    }
+}
+
+/// Whether DTD attribute-value normalization of an attribute with a type
+/// other than `CDATA` would change `value`, which is already normalized as a
+/// `CDATA` value: it starts or ends with a space, or has two spaces in a row.
+fn is_changed_by_token_normalization(value: &str) -> bool {
+    value.starts_with(' ') || value.ends_with(' ') || value.contains("  ")
+}
+
 /// The nodes made so far, and the start tag that is being read.
 ///
 /// `'a` is the lifetime of the text that the tokenizer reads: names and
@@ -62,6 +170,9 @@ struct DocumentBuilder<'a> {
     /// or line ends change is built, kept from one to the next; the tree
     /// gets a copy of the length of the value.
     buffer: String,
+    /// What the document type declaration says, if the document has one
+    /// that can change the document.
+    dtd: Option<Box<Dtd>>,
 }
 
 impl<'a> DocumentBuilder<'a> {
@@ -79,6 +190,7 @@ impl<'a> DocumentBuilder<'a> {
             id_nodes: HashMap::new(),
             xml_id_id: xot.xml_id_id,
             buffer: String::new(),
+            dtd: None,
         }
     }
 
@@ -107,7 +219,20 @@ impl<'a> DocumentBuilder<'a> {
         // declaration attribute, with its references expanded like in any
         // other attribute value (https://www.w3.org/TR/xml-names/#ns-decl)
         let namespace_uri =
-            parse_attribute_in(value.as_str().into(), value.start(), &mut self.buffer)?;
+            parse_attribute_in(value.as_str().into(), value.start(), &mut self.buffer)
+                .map_err(|e| entity_error(&self.dtd, e, value))?;
+        if let Some(dtd) = &mut self.dtd {
+            let element = self.element_builder.as_ref();
+            if dtd.is_typed(
+                element.map_or("", |e| e.prefix.as_str()),
+                element.map_or("", |e| e.name.as_str()),
+                prefix.as_str(),
+                local.as_str(),
+            ) && is_changed_by_token_normalization(&namespace_uri)
+            {
+                return Err(ParseError::DtdUnsupported(value.into()));
+            }
+        }
         let prefix_id = self.name_id_builder.prefix_id(declared, xot);
         // like any attribute, a declaration can be on an element only once
         if self
@@ -150,7 +275,8 @@ impl<'a> DocumentBuilder<'a> {
             ));
         }
         let value_span = value.into();
-        let value = parse_attribute_in(value.as_str().into(), value.start(), &mut self.buffer)?;
+        let value = parse_attribute_in(value.as_str().into(), value.start(), &mut self.buffer)
+            .map_err(|e| entity_error(&self.dtd, e, value))?;
         // if this is an xml:id we want to apply xml:id normalization as described here
         // https://www.w3.org/TR/xml-id/#id-avn
         let value = if name.as_str() == "id" && prefix.as_str() == "xml" {
@@ -158,6 +284,18 @@ impl<'a> DocumentBuilder<'a> {
         } else {
             value
         };
+        if let Some(dtd) = &mut self.dtd {
+            let element = self.element_builder.as_ref();
+            if dtd.is_typed(
+                element.map_or("", |e| e.prefix.as_str()),
+                element.map_or("", |e| e.name.as_str()),
+                prefix.as_str(),
+                name.as_str(),
+            ) && is_changed_by_token_normalization(&value)
+            {
+                return Err(ParseError::DtdUnsupported(value_span));
+            }
+        }
         self.attributes.push(AttributeBuilder {
             prefix,
             name,
@@ -267,7 +405,8 @@ impl<'a> DocumentBuilder<'a> {
     }
 
     fn text(&mut self, content: StrSpan<'a>, xot: &mut Xot) -> Result<NodeId, ParseError> {
-        let content = parse_text_in(content.as_str().into(), content.start(), &mut self.buffer)?;
+        let content = parse_text_in(content.as_str().into(), content.start(), &mut self.buffer)
+            .map_err(|e| entity_error(&self.dtd, e, content))?;
         if let Some(last) = self.consolidate_text(&content, xot) {
             return Ok(last);
         }
@@ -1058,16 +1197,7 @@ impl Xot {
             if let Some(token) = tokenizer.next() {
                 let token = match token {
                     Ok(token) => token,
-                    Err(e) => {
-                        // the lines and columns of the error count in the
-                        // text that the tokenizer reads, where a newline in
-                        // `xml` can be a space
-                        let text = tokenizer.stream().span().as_str();
-                        return Err(ParseError::XmlParser(
-                            reposition_error(e, text, xml),
-                            position,
-                        ));
-                    }
+                    Err(e) => return Err(tokenizer_error(e, position, &tokenizer, xml)),
                 };
                 match token {
                     Attribute {
@@ -1173,13 +1303,24 @@ impl Xot {
                             ));
                         }
                     }
-                    DtdStart { span, .. } => {
-                        return Err(ParseError::DtdUnsupported(span.into()));
+                    // a document type declaration is ignored: nothing
+                    // external is read, and its declarations are not
+                    // applied, but the parser keeps what it needs to reject
+                    // a document that depends on them (see `dtd::scan`)
+                    EmptyDtd { external_id, .. } => {
+                        if external_id.is_some() {
+                            builder.dtd = Some(Box::new(Dtd::new(Default::default(), true)));
+                        }
+                    }
+                    DtdStart {
+                        external_id, span, ..
+                    } => {
+                        let text = tokenizer.stream().span().as_str();
+                        let subset = dtd::scan(text, span.end())?;
+                        builder.dtd = Some(Box::new(Dtd::new(subset, external_id.is_some())));
+                        skip_internal_subset(&mut tokenizer, span, xml)?;
                     }
                     DtdEnd { span, .. } => {
-                        return Err(ParseError::DtdUnsupported(span.into()));
-                    }
-                    EmptyDtd { span, .. } => {
                         return Err(ParseError::DtdUnsupported(span.into()));
                     }
                     EntityDeclaration { span, .. } => {
@@ -1303,6 +1444,52 @@ impl Xot {
         let xml = decode(bytes)?;
         self.parse(&xml)
     }
+}
+
+/// Read the tokens of the internal subset of a document type declaration,
+/// which starts with the tokenizer's `DtdStart` token `start`, up to its
+/// end. Its entity declarations, comments and processing instructions are
+/// not part of the document.
+fn skip_internal_subset(
+    tokenizer: &mut Tokenizer<'_>,
+    start: StrSpan<'_>,
+    xml: &str,
+) -> Result<(), ParseError> {
+    loop {
+        let position = tokenizer.stream().pos();
+        match tokenizer.next() {
+            Some(Ok(Token::DtdEnd { .. })) => return Ok(()),
+            Some(Ok(Token::EntityDeclaration { .. } | Token::Comment { .. })) => {}
+            Some(Ok(Token::ProcessingInstruction { target, .. })) => {
+                // as in the document (https://www.w3.org/TR/xml/#sec-pi)
+                if target.as_str().eq_ignore_ascii_case("xml") {
+                    return Err(ParseError::InvalidPiTarget(
+                        target.to_string(),
+                        target.into(),
+                    ));
+                }
+            }
+            Some(Err(e)) => return Err(tokenizer_error(e, position, tokenizer, xml)),
+            // the tokenizer gives nothing else in an internal subset, and
+            // ends without an error if the internal subset is not closed
+            Some(Ok(_)) | None => return Err(ParseError::DtdUnsupported(start.into())),
+        }
+    }
+}
+
+/// The error for `error`, which the tokenizer gave when it read from the
+/// byte index `position` of `xml`.
+#[cold]
+fn tokenizer_error(
+    error: xmlparser::Error,
+    position: usize,
+    tokenizer: &Tokenizer<'_>,
+    xml: &str,
+) -> ParseError {
+    // the lines and columns of the error count in the text that the
+    // tokenizer reads, where a newline in `xml` can be a space
+    let text = tokenizer.stream().span().as_str();
+    ParseError::XmlParser(reposition_error(error, text, xml), position)
 }
 
 /// Tell `recorder` the span of the name of the element `node_id`, which was

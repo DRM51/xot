@@ -78,6 +78,21 @@
 
 ### Features added
 
+- The parser accepts a document type declaration, with or without an
+  external identifier and an internal subset, and skips it; it used to reject
+  every document with one (`ParseError::DtdUnsupported`). Nothing external is
+  read, and the declarations of the internal subset are not applied: entities
+  are not expanded, attribute default values are not added and attribute types are
+  not applied, and the tree keeps no document type declaration. So that a
+  document that depends on its declarations does not silently give another
+  tree, `ParseError::DtdUnsupported` now points at what the parser cannot
+  apply: a reference to an entity that the internal subset declares (or to
+  any entity other than the predefined ones when there is an external
+  identifier), an attribute default value (a literal or `#FIXED`), a
+  parameter-entity reference, a value of an attribute declared with a type
+  other than `CDATA` that its normalization would change, or an
+  attribute-list declaration that it cannot read. The API does not change.
+
 - `unescaped_cr` in `output::xml::Parameters` and
   `output::TokenSerializeParameters` writes a carriage return in text as is,
   while it is still escaped in attribute values, as some other serializers

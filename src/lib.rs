@@ -62,6 +62,7 @@
 mod access;
 mod arena;
 mod creation;
+mod dtd;
 mod encoding;
 mod entity;
 mod error;

@@ -118,9 +118,28 @@ pub enum ParseError {
         note = "The value of the standalone declaration is now ignored"
     )]
     UnsupportedNotStandalone(Span),
-    /// XML DTD is not supported.
+    /// The document depends on its document type declaration, which the
+    /// parser does not apply.
     ///
-    /// The span is the part of the DTD that is found, in the parsed text.
+    /// The parser accepts a document type declaration and skips it: it reads
+    /// nothing external, and does not apply the declarations of the internal
+    /// subset. A document that the declaration would change gives this error
+    /// instead of another tree:
+    ///
+    /// - a reference to an entity that the internal subset declares, or to
+    ///   any entity other than the predefined ones if the declaration has an
+    ///   external identifier (an external subset can declare it);
+    /// - an attribute default in the internal subset, a literal value or
+    ///   `#FIXED`;
+    /// - a parameter-entity reference in the internal subset;
+    /// - a value of an attribute that the internal subset declares with a
+    ///   type other than `CDATA` that the normalization of such values would
+    ///   change: it starts or ends with a space, or has two spaces in a row;
+    /// - an attribute-list declaration that the parser cannot read;
+    /// - an internal subset that is not closed.
+    ///
+    /// The span is the reference, the declaration, the attribute value or the
+    /// start of the document type declaration, in the parsed text.
     DtdUnsupported(Span),
     /// A processing instruction with the target `xml` in any case, such as
     /// `<?XML x?>` or `<?xml?>`, which XML 1.0 does not allow (production

@@ -81,30 +81,36 @@ fn test_duplicate_attribute_with_prefix() {
 }
 
 #[test]
-fn test_invalid_dtd() {
+fn test_doctype_accepted() {
     let xml = r#"<!DOCTYPE note><note></note>"#;
     let mut xot = Xot::new();
-    let err = xot.parse(xml).unwrap_err();
-    assert!(matches!(err, xot::ParseError::DtdUnsupported { .. }));
-    assert_eq!(err.span(), (0..15).into());
+    let doc = xot.parse(xml).unwrap();
+    assert_eq!(xot.to_string(doc).unwrap(), "<note/>");
 }
 
 #[test]
-fn test_dtd_unsupported() {
+fn test_doctype_system_accepted() {
     let xml = r#"<!DOCTYPE note SYSTEM "Note.dtd"><note></note>"#;
     let mut xot = Xot::new();
-    let err = xot.parse(xml).unwrap_err();
-    assert!(matches!(err, xot::ParseError::DtdUnsupported { .. }));
-    assert_eq!(err.span(), (0..33).into());
+    let doc = xot.parse(xml).unwrap();
+    assert_eq!(xot.to_string(doc).unwrap(), "<note/>");
 }
 
 #[test]
-fn test_dtd_unsupported2() {
+fn test_doctype_system_after_declaration_accepted() {
     let xml = r#"<?xml version="1.0"?><!DOCTYPE note SYSTEM "Note.dtd"><note></note>"#;
+    let mut xot = Xot::new();
+    let doc = xot.parse(xml).unwrap();
+    assert_eq!(xot.to_string(doc).unwrap(), "<note/>");
+}
+
+#[test]
+fn test_dtd_unsupported_entity_reference() {
+    let xml = r#"<!DOCTYPE note [<!ENTITY e "x">]><note>&e;</note>"#;
     let mut xot = Xot::new();
     let err = xot.parse(xml).unwrap_err();
     assert!(matches!(err, xot::ParseError::DtdUnsupported { .. }));
-    assert_eq!(err.span(), (21..54).into());
+    assert_eq!(err.span(), (39..42).into());
 }
 
 #[test]
