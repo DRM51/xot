@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
-use xmlparser::{ElementEnd, StrSpan, Stream, TextPos, Token, Tokenizer};
+use xmlparser::{
+    ElementEnd, EntityDefinition, ExternalId, StrSpan, Stream, TextPos, Token, Tokenizer,
+};
 
 use crate::arena::NodeId;
 use crate::dtd;
@@ -1308,6 +1310,7 @@ impl Xot {
                     // applied, but the parser keeps what it needs to reject
                     // a document that depends on them (see `dtd::scan`)
                     EmptyDtd { external_id, .. } => {
+                        check_external_id(&external_id, xml)?;
                         if external_id.is_some() {
                             builder.dtd = Some(Box::new(Dtd::new(Default::default(), true)));
                         }
@@ -1315,8 +1318,9 @@ impl Xot {
                     DtdStart {
                         external_id, span, ..
                     } => {
+                        check_external_id(&external_id, xml)?;
                         let text = tokenizer.stream().span().as_str();
-                        let subset = dtd::scan(text, span.end())?;
+                        let subset = dtd::scan(text, span.end(), xml)?;
                         builder.dtd = Some(Box::new(Dtd::new(subset, external_id.is_some())));
                         skip_internal_subset(&mut tokenizer, span, xml)?;
                     }
@@ -1459,6 +1463,15 @@ fn skip_internal_subset(
         let position = tokenizer.stream().pos();
         match tokenizer.next() {
             Some(Ok(Token::DtdEnd { .. })) => return Ok(()),
+            Some(Ok(Token::EntityDeclaration {
+                definition: EntityDefinition::ExternalId(ExternalId::Public(public_id, _)),
+                ..
+            })) => dtd::check_public_id(
+                public_id.as_str(),
+                public_id.start(),
+                xml,
+                xmlparser::Error::InvalidEntity,
+            )?,
             Some(Ok(Token::EntityDeclaration { .. } | Token::Comment { .. })) => {}
             Some(Ok(Token::ProcessingInstruction { target, .. })) => {
                 // as in the document (https://www.w3.org/TR/xml/#sec-pi)
@@ -1474,6 +1487,21 @@ fn skip_internal_subset(
             // ends without an error if the internal subset is not closed
             Some(Ok(_)) | None => return Err(ParseError::DtdUnsupported(start.into())),
         }
+    }
+}
+
+/// The public identifier of the external identifier of a document type
+/// declaration must have only `PubidChar`s, which the tokenizer does not
+/// check.
+fn check_external_id(external_id: &Option<ExternalId<'_>>, xml: &str) -> Result<(), ParseError> {
+    match external_id {
+        Some(ExternalId::Public(public_id, _)) => dtd::check_public_id(
+            public_id.as_str(),
+            public_id.start(),
+            xml,
+            xmlparser::Error::InvalidDoctype,
+        ),
+        _ => Ok(()),
     }
 }
 

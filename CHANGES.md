@@ -76,6 +76,14 @@
   `Error::MissingPrefix`: call `create_missing_prefixes` after detaching it,
   or use `Xot::clone_with_prefixes`.
 
+- `ParseError::DtdUnsupported` is returned in other cases (see below). It
+  used to signal that the document has a document type declaration, and every
+  such document failed with it; such documents now parse, and the error is
+  only returned when the document depends on a declaration that the parser
+  cannot apply.
+  Code that matched `DtdUnsupported` to find out whether a document has a
+  document type declaration no longer can.
+
 ### Features added
 
 - The parser accepts a document type declaration, with or without an
@@ -92,6 +100,9 @@
   parameter-entity reference, a value of an attribute declared with a type
   other than `CDATA` that its normalization would change, or an
   attribute-list declaration that it cannot read. The API does not change.
+  A public identifier (in the document type declaration, an entity
+  declaration or a notation declaration) with a character that is not a
+  `PubidChar` is not well-formed, and gives `ParseError::XmlParser`.
 
 - `unescaped_cr` in `output::xml::Parameters` and
   `output::TokenSerializeParameters` writes a carriage return in text as is,

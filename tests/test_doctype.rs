@@ -147,7 +147,7 @@ fn test_doctype_with_declarations() {
 
 #[test]
 fn test_doctype_brackets_and_closes_in_quotes() {
-    let doctype = r#"<!DOCTYPE doc [<!ENTITY a "]>"><!ENTITY b SYSTEM ']>'><!ENTITY c PUBLIC "-//X//]>" "c]>">]>"#;
+    let doctype = r#"<!DOCTYPE doc [<!ENTITY a "]>"><!ENTITY b SYSTEM ']>'><!ENTITY c PUBLIC "-//X//Y" "c]>">]>"#;
     accepted(&format!("{}<doc/>", doctype), doctype);
 }
 
@@ -318,6 +318,72 @@ fn test_doctype_errors_of_the_tokenizer() {
         error("<!DOCTYPE doc [<!ENTITY e>]><doc/>"),
         ParseError::XmlParser(..)
     ));
+}
+
+/// Parsing `xml` gives the tokenizer's error for a malformed external
+/// identifier, at the first `part` in `xml`.
+fn invalid_public_id_at(xml: &str, part: &str) {
+    match error(xml) {
+        ParseError::XmlParser(e, position) => {
+            assert_eq!(position, span_of(xml, part).start, "{:?}", xml);
+            assert!(
+                matches!(
+                    e,
+                    xmlparser::Error::InvalidDoctype(xmlparser::StreamError::InvalidExternalID, _)
+                        | xmlparser::Error::InvalidEntity(
+                            xmlparser::StreamError::InvalidExternalID,
+                            _
+                        )
+                ),
+                "{:?}: {:?}",
+                xml,
+                e
+            );
+        }
+        other => panic!("{:?}: expected XmlParser, got {:?}", xml, other),
+    }
+}
+
+#[test]
+fn test_doctype_public_identifier_characters() {
+    // every PubidChar, and a quote of the other kind
+    let doctype = "<!DOCTYPE doc PUBLIC \"-'()+,./:=?;!*#@$_% \r\nazAZ09\" 'doc.dtd'>";
+    accepted(&format!("{}<doc/>", doctype), doctype);
+    let doctype = r#"<!DOCTYPE doc PUBLIC "" "doc.dtd" []>"#;
+    accepted(&format!("{}<doc/>", doctype), doctype);
+    let doctype = r#"<!DOCTYPE doc [<!ENTITY e PUBLIC "-//X//Y" "e.xml"><!NOTATION n PUBLIC '-//X//N'><!NOTATION m PUBLIC "-//X//M" "m">]>"#;
+    accepted(&format!("{}<doc/>", doctype), doctype);
+    // characters that are not PubidChars
+    invalid_public_id_at(r#"<!DOCTYPE doc PUBLIC "{" "doc.dtd"><doc/>"#, "{");
+    invalid_public_id_at(r#"<!DOCTYPE doc PUBLIC "a~b" "doc.dtd" []><doc/>"#, "~");
+    invalid_public_id_at("<!DOCTYPE doc PUBLIC \"-\t-\" \"doc.dtd\"><doc/>", "\t");
+    invalid_public_id_at(r#"<!DOCTYPE doc PUBLIC 'a"b' "doc.dtd"><doc/>"#, "\"b'");
+    invalid_public_id_at(r#"<!DOCTYPE doc PUBLIC "a&b" "doc.dtd"><doc/>"#, "&");
+    invalid_public_id_at(
+        "<!DOCTYPE doc PUBLIC \"\u{e9}\" \"doc.dtd\"><doc/>",
+        "\u{e9}",
+    );
+    invalid_public_id_at(
+        r#"<!DOCTYPE doc [<!ENTITY e PUBLIC "a<b" "e.xml">]><doc/>"#,
+        "<b",
+    );
+    invalid_public_id_at(
+        r#"<!DOCTYPE doc [<!ENTITY % p PUBLIC "a^" "p.dtd">]><doc/>"#,
+        "^",
+    );
+    invalid_public_id_at(
+        r#"<!DOCTYPE doc [<!ENTITY e PUBLIC "a|" "e" NDATA n>]><doc/>"#,
+        "|",
+    );
+    invalid_public_id_at(r#"<!DOCTYPE doc [<!NOTATION n PUBLIC "{">]><doc/>"#, "{");
+    invalid_public_id_at(
+        "<?xml version='1.0'\n?>\n<!DOCTYPE doc [\n<!NOTATION n PUBLIC 'a\\b' 'n'>]><doc/>",
+        "\\b",
+    );
+    // a system literal can have any character
+    let doctype =
+        r#"<!DOCTYPE doc SYSTEM "{~}" [<!ENTITY e SYSTEM "{~}"><!NOTATION n SYSTEM "{~}">]>"#;
+    accepted(&format!("{}<doc/>", doctype), doctype);
 }
 
 #[test]

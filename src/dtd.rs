@@ -13,6 +13,10 @@
 //! - attribute default values (a literal or `#FIXED`) and parameter-entity
 //!   references, which give [`ParseError::DtdUnsupported`] right away.
 //!
+//! It also checks the public identifier of a `NOTATION` declaration, which
+//! the tokenizer skips: a character other than a `PubidChar` is not
+//! well-formed.
+//!
 //! The scan is one pass over the bytes of the internal subset, without
 //! recursion; it keeps only the names that it notes.
 //!
@@ -41,10 +45,11 @@ pub(crate) struct InternalSubset {
 /// starts at the byte index `start`, right after its `[`.
 ///
 /// The spans of the errors are byte ranges in `text`.
-pub(crate) fn scan(text: &str, start: usize) -> Result<InternalSubset, ParseError> {
+pub(crate) fn scan(text: &str, start: usize, xml: &str) -> Result<InternalSubset, ParseError> {
     let mut scanner = Scanner {
         bytes: text.as_bytes(),
         pos: start,
+        xml,
     };
     let mut subset = InternalSubset::default();
     scanner.subset(&mut subset)?;
@@ -67,6 +72,40 @@ const KEYWORD_TYPES: [&[u8]; 8] = [
 struct Scanner<'t> {
     bytes: &'t [u8],
     pos: usize,
+    /// The parsed text, for the positions of errors.
+    xml: &'t str,
+}
+
+/// Whether `b` is a character that a public identifier can have (production
+/// `PubidChar`).
+fn is_pubid_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b" \r\n-'()+,./:=?;!*#@$_%".contains(&b)
+}
+
+/// Check the public identifier `literal`, without its quotes, which starts
+/// at the byte index `start` of `xml`: a character other than a `PubidChar`
+/// is not well-formed. `error` makes the tokenizer's error of the
+/// declaration.
+pub(crate) fn check_public_id(
+    literal: &str,
+    start: usize,
+    xml: &str,
+    error: fn(xmlparser::StreamError, xmlparser::TextPos) -> xmlparser::Error,
+) -> Result<(), ParseError> {
+    match literal.bytes().position(|b| !is_pubid_char(b)) {
+        None => Ok(()),
+        Some(i) => Err(public_id_error(start + i, xml, error)),
+    }
+}
+
+#[cold]
+fn public_id_error(
+    at: usize,
+    xml: &str,
+    error: fn(xmlparser::StreamError, xmlparser::TextPos) -> xmlparser::Error,
+) -> ParseError {
+    let pos = xmlparser::Stream::from(xml).gen_text_pos_from(at);
+    ParseError::XmlParser(error(xmlparser::StreamError::InvalidExternalID, pos), at)
 }
 
 /// Whether `b` is white space (production `S`).
@@ -183,6 +222,9 @@ impl<'t> Scanner<'t> {
             } else if self.starts_with(b"<!ATTLIST") {
                 self.attlist(subset)?;
             } else if self.starts_with(b"<!ELEMENT") || self.starts_with(b"<!NOTATION") {
+                if self.starts_with(b"<!NOTATION") {
+                    self.check_notation_public_id()?;
+                }
                 if !self.skip_to_first_close()? {
                     return Ok(());
                 }
@@ -195,6 +237,45 @@ impl<'t> Scanner<'t> {
             } else {
                 return Ok(());
             }
+        }
+    }
+
+    /// The public identifier of the `NOTATION` declaration at the position,
+    /// `'<!NOTATION' S Name S 'PUBLIC' S PubidLiteral`, must have only
+    /// `PubidChar`s; the tokenizer skips the declaration without a check.
+    /// The position does not move.
+    fn check_notation_public_id(&self) -> Result<(), ParseError> {
+        let mut scanner = Scanner {
+            bytes: self.bytes,
+            pos: self.pos + b"<!NOTATION".len(),
+            xml: self.xml,
+        };
+        if !scanner.skip_space() || scanner.name().is_empty() || !scanner.skip_space() {
+            return Ok(());
+        }
+        if !scanner.starts_with(b"PUBLIC") {
+            return Ok(());
+        }
+        scanner.pos += b"PUBLIC".len();
+        if !scanner.skip_space() {
+            return Ok(());
+        }
+        let Some(quote @ (b'"' | b'\'')) = scanner.peek() else {
+            return Ok(());
+        };
+        let start = scanner.pos + 1;
+        let Some(length) = scanner.bytes[start..].iter().position(|&b| b == quote) else {
+            return Ok(());
+        };
+        // the literal ends at a quote, so it is whole characters
+        match std::str::from_utf8(&scanner.bytes[start..start + length]) {
+            Ok(literal) => check_public_id(
+                literal,
+                start,
+                scanner.xml,
+                xmlparser::Error::InvalidDoctype,
+            ),
+            Err(_) => Ok(()),
         }
     }
 
@@ -404,7 +485,7 @@ mod tests {
 
     fn scan_subset(subset: &str) -> Result<InternalSubset, ParseError> {
         let text = format!("<!DOCTYPE doc [{}]><doc/>", subset);
-        scan(&text, "<!DOCTYPE doc [".len())
+        scan(&text, "<!DOCTYPE doc [".len(), &text)
     }
 
     fn err_span(subset: &str) -> (usize, usize) {
@@ -515,6 +596,6 @@ mod tests {
         assert!(scan_subset("text <!ATTLIST doc a CDATA 'v'>").is_ok());
         // unterminated: the tokenizer reports it
         let text = "<!DOCTYPE doc [<!ENTITY a \"x";
-        assert!(scan(text, "<!DOCTYPE doc [".len()).is_ok());
+        assert!(scan(text, "<!DOCTYPE doc [".len(), text).is_ok());
     }
 }
