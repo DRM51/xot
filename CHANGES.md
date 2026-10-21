@@ -99,7 +99,9 @@
   identifier), an attribute default value (a literal or `#FIXED`), a
   parameter-entity reference, a value of an attribute declared with a type
   other than `CDATA` that its normalization would change, or an
-  attribute-list declaration that it cannot read. The API does not change.
+  attribute-list declaration that it cannot read. As XML 1.0 says, only the
+  first definition of an attribute of an element type counts: a later one
+  neither gives it a type nor a default. The API does not change.
   A public identifier (in the document type declaration, an entity
   declaration or a notation declaration) with a character that is not a
   `PubidChar` is not well-formed, and gives `ParseError::XmlParser`.

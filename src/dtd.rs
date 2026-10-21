@@ -13,6 +13,10 @@
 //! - attribute default values (a literal or `#FIXED`) and parameter-entity
 //!   references, which give [`ParseError::DtdUnsupported`] right away.
 //!
+//! As XML 1.0 (section 3.3) says, the first declaration of an attribute of
+//! an element type is the one that counts and later ones are ignored: a later
+//! declaration neither makes the attribute typed nor gives it a default.
+//!
 //! It also checks the public identifier of a `NOTATION` declaration, which
 //! the tokenizer skips: a character other than a `PubidChar` is not
 //! well-formed.
@@ -26,6 +30,8 @@
 //! the tokenizer rejects these in an internal subset. It ends an `ELEMENT` or
 //! a `NOTATION` declaration at the first `>`, as the tokenizer does, so that
 //! both see the same declarations.
+
+use ahash::{HashSet, HashSetExt};
 
 use crate::error::ParseError;
 use crate::Span;
@@ -52,7 +58,8 @@ pub(crate) fn scan(text: &str, start: usize, xml: &str) -> Result<InternalSubset
         xml,
     };
     let mut subset = InternalSubset::default();
-    scanner.subset(&mut subset)?;
+    let mut declared = Declared::new();
+    scanner.subset(&mut subset, &mut declared)?;
     Ok(subset)
 }
 
@@ -68,6 +75,38 @@ const KEYWORD_TYPES: [&[u8]; 8] = [
     b"NMTOKEN",
     b"NMTOKENS",
 ];
+
+/// The attributes declared so far, of any type, each as its element name and
+/// its attribute name as written, separated by a space (which no name
+/// contains): only the first declaration of each one counts.
+struct Declared {
+    names: HashSet<Box<str>>,
+    /// The buffer in which a name is written to look it up.
+    key: String,
+}
+
+impl Declared {
+    fn new() -> Self {
+        Declared {
+            names: HashSet::new(),
+            key: String::new(),
+        }
+    }
+
+    /// Note that the attribute `attribute` of the element `element` is
+    /// declared; whether this is its first declaration.
+    fn first(&mut self, element: &str, attribute: &str) -> bool {
+        self.key.clear();
+        self.key.push_str(element);
+        self.key.push(' ');
+        self.key.push_str(attribute);
+        if self.names.contains(self.key.as_str()) {
+            return false;
+        }
+        self.names.insert(self.key.as_str().into());
+        true
+    }
+}
 
 struct Scanner<'t> {
     bytes: &'t [u8],
@@ -196,7 +235,11 @@ impl<'t> Scanner<'t> {
     }
 
     /// The declarations of the internal subset, up to the `]` that ends it.
-    fn subset(&mut self, subset: &mut InternalSubset) -> Result<(), ParseError> {
+    fn subset(
+        &mut self,
+        subset: &mut InternalSubset,
+        declared: &mut Declared,
+    ) -> Result<(), ParseError> {
         loop {
             self.skip_space();
             let Some(b) = self.peek() else {
@@ -220,7 +263,7 @@ impl<'t> Scanner<'t> {
                     return Ok(());
                 }
             } else if self.starts_with(b"<!ATTLIST") {
-                self.attlist(subset)?;
+                self.attlist(subset, declared)?;
             } else if self.starts_with(b"<!ELEMENT") || self.starts_with(b"<!NOTATION") {
                 if self.starts_with(b"<!NOTATION") {
                     self.check_notation_public_id()?;
@@ -372,8 +415,14 @@ impl<'t> Scanner<'t> {
     /// `'<!ATTLIST' S Name (S AttDef)* S? '>'`. Notes the attributes with
     /// a type other than `CDATA`; a default value, a parameter-entity
     /// reference or anything else that cannot be read gives
-    /// `DtdUnsupported`.
-    fn attlist(&mut self, subset: &mut InternalSubset) -> Result<(), ParseError> {
+    /// `DtdUnsupported`. An attribute that an earlier definition declares
+    /// keeps that definition: the later one is read, but neither noted nor
+    /// rejected for its default.
+    fn attlist(
+        &mut self,
+        subset: &mut InternalSubset,
+        declared: &mut Declared,
+    ) -> Result<(), ParseError> {
         let start = self.pos;
         let unreadable =
             |scanner: &Self| ParseError::DtdUnsupported(scanner.declaration_span(start));
@@ -425,25 +474,59 @@ impl<'t> Scanner<'t> {
             if !self.skip_space() {
                 return Err(self.reference_or(unreadable(self)));
             }
+            // names end at an ASCII byte, so they are whole characters
+            let (Ok(element), Ok(attribute)) =
+                (std::str::from_utf8(element), std::str::from_utf8(attribute))
+            else {
+                return Err(unreadable(self));
+            };
+            let first = declared.first(element, attribute);
             // DefaultDecl ::= '#REQUIRED' | '#IMPLIED' | (('#FIXED' S)? AttValue)
             if self.starts_with(b"#REQUIRED") {
                 self.pos += b"#REQUIRED".len();
             } else if self.starts_with(b"#IMPLIED") {
                 self.pos += b"#IMPLIED".len();
             } else if self.starts_with(b"#FIXED") || matches!(self.peek(), Some(b'"' | b'\'')) {
-                // an attribute default, which the parser would have to add
-                return Err(unreadable(self));
+                // an attribute default, which the parser would have to add,
+                // unless an earlier definition binds the attribute
+                if first || !self.ignored_default() {
+                    return Err(unreadable(self));
+                }
             } else {
                 return Err(self.reference_or(unreadable(self)));
             }
-            if typed {
-                if let (Ok(element), Ok(attribute)) =
-                    (std::str::from_utf8(element), std::str::from_utf8(attribute))
-                {
-                    subset.typed.push((element.into(), attribute.into()));
-                }
+            if typed && first {
+                subset.typed.push((element.into(), attribute.into()));
             }
         }
+    }
+
+    /// Skip the default `('#FIXED' S)? AttValue` at the position, of a
+    /// definition that is ignored. Whether it could be read: a value with a
+    /// `<`, `>` or `&` cannot, since the tokenizer ends the declaration at
+    /// the first `>` and references in a default are not checked here.
+    fn ignored_default(&mut self) -> bool {
+        if self.starts_with(b"#FIXED") {
+            self.pos += b"#FIXED".len();
+            if !self.skip_space() {
+                return false;
+            }
+        }
+        let Some(quote @ (b'"' | b'\'')) = self.peek() else {
+            return false;
+        };
+        let start = self.pos + 1;
+        let Some(length) = self.bytes[start..].iter().position(|&b| b == quote) else {
+            return false;
+        };
+        if self.bytes[start..start + length]
+            .iter()
+            .any(|b| matches!(b, b'<' | b'>' | b'&'))
+        {
+            return false;
+        }
+        self.pos = start + length + 1;
+        true
     }
 
     /// The error for a parameter-entity reference at the position, if there
@@ -564,6 +647,56 @@ mod tests {
             err_span(&format!("<!-- c -->{}", decl)),
             (10, 10 + decl.len())
         );
+    }
+
+    #[test]
+    fn first_definition_counts() {
+        let typed = |subset: &str| -> Vec<(String, String)> {
+            scan_subset(subset)
+                .unwrap()
+                .typed
+                .iter()
+                .map(|(e, a)| (e.to_string(), a.to_string()))
+                .collect()
+        };
+        let pair = |e: &str, a: &str| vec![(e.to_string(), a.to_string())];
+        // a later definition of the same attribute does not make it typed
+        assert!(typed("<!ATTLIST doc a CDATA #IMPLIED><!ATTLIST doc a ID #IMPLIED>").is_empty());
+        assert!(typed("<!ATTLIST doc a CDATA #IMPLIED a NMTOKEN #IMPLIED>").is_empty());
+        // nor does it make an attribute that the first declares typed untyped
+        assert_eq!(
+            typed("<!ATTLIST doc a ID #IMPLIED><!ATTLIST doc a CDATA #IMPLIED>"),
+            pair("doc", "a")
+        );
+        // a repeated definition is noted once
+        assert_eq!(
+            typed("<!ATTLIST doc a ID #IMPLIED a ID #IMPLIED><!ATTLIST doc a ID #IMPLIED>"),
+            pair("doc", "a")
+        );
+        // the same attribute name on another element is another attribute
+        assert_eq!(
+            typed("<!ATTLIST doc a CDATA #IMPLIED><!ATTLIST item a ID #IMPLIED>"),
+            pair("item", "a")
+        );
+        // a later default is ignored
+        assert!(typed(
+            "<!ATTLIST doc a CDATA #IMPLIED><!ATTLIST doc a CDATA 'v' b CDATA #IMPLIED a ID #FIXED \"w\">"
+        )
+        .is_empty());
+        // but a first one is not, after an ignored one
+        let lead = "<!ATTLIST doc a ID #IMPLIED>";
+        let decl = "<!ATTLIST doc a CDATA 'v' b CDATA 'w'>";
+        assert_eq!(
+            err_span(&format!("{}{}", lead, decl)),
+            (lead.len(), lead.len() + decl.len())
+        );
+        // a later default that cannot be read as the tokenizer reads it
+        for value in ["'v>w'", "'v<w'", "'&#38;'", "#FIXED", "#FIXEDv", "'v"] {
+            let decl = format!("<!ATTLIST doc a CDATA {}>", value);
+            let lead = "<!ATTLIST doc a CDATA #IMPLIED>";
+            let span = err_span(&format!("{}{}", lead, decl));
+            assert_eq!(span.0, lead.len(), "{}", decl);
+        }
     }
 
     #[test]

@@ -245,6 +245,44 @@ fn test_doctype_attribute_default_values() {
 }
 
 #[test]
+fn test_doctype_first_attribute_definition_counts() {
+    // XML 1.0 section 3.3: the first definition of an attribute of an
+    // element type is the one that counts, and later ones are ignored
+    for doctype in [
+        "<!DOCTYPE doc [<!ATTLIST doc a CDATA #IMPLIED><!ATTLIST doc a ID #IMPLIED>]>",
+        "<!DOCTYPE doc [<!ATTLIST doc a CDATA #IMPLIED a NMTOKEN #IMPLIED>]>",
+        "<!DOCTYPE doc [<!ATTLIST doc a CDATA #IMPLIED><!ATTLIST doc a CDATA \"v\">]>",
+        "<!DOCTYPE doc [<!ATTLIST doc a CDATA #REQUIRED><!ATTLIST doc a ID #FIXED 'v'>]>",
+    ] {
+        accepted(&format!("{}<doc a=\" x \"/>", doctype), doctype);
+        // a later default is not added
+        accepted(&format!("{}<doc/>", doctype), doctype);
+    }
+    // a first definition with a type other than CDATA still counts
+    let doctype = "<!DOCTYPE doc [<!ATTLIST doc a ID #IMPLIED><!ATTLIST doc a CDATA #IMPLIED>]>";
+    unsupported_at(&format!("{}<doc a=\" x \"/>", doctype), " x ");
+    accepted(&format!("{}<doc a=\"x\"/>", doctype), doctype);
+    // and so does a first default
+    let declaration = "<!ATTLIST doc a CDATA 'v'>";
+    unsupported_at(
+        &format!(
+            "<!DOCTYPE doc [{}<!ATTLIST doc a CDATA #IMPLIED>]><doc/>",
+            declaration
+        ),
+        declaration,
+    );
+    // a later default that has markup or a reference is not read
+    let declaration = "<!ATTLIST doc a CDATA 'v&#62;'>";
+    unsupported_at(
+        &format!(
+            "<!DOCTYPE doc [<!ATTLIST doc a CDATA #IMPLIED>{}]><doc/>",
+            declaration
+        ),
+        declaration,
+    );
+}
+
+#[test]
 fn test_doctype_parameter_entity_references() {
     unsupported_at(r#"<!DOCTYPE doc [<!ENTITY % p "x"> %p; ]><doc/>"#, "%p;");
     unsupported_at(r#"<!DOCTYPE doc [<!ENTITY a "x%p;">]><doc/>"#, "%p;");

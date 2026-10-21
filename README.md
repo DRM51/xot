@@ -52,7 +52,8 @@ There are the following limitations:
   declared entity, or to any entity other than the predefined ones when
   there is an external subset; an attribute default or a parameter-entity
   reference in the internal subset; or an attribute value that the declared
-  type of the attribute would normalize.
+  type of the attribute would normalize. Only the first definition of an
+  attribute of an element type counts, as in XML 1.0.
 - Only XML 1.0 is supported. 
 
 ## Why another XML library for Rust?
