@@ -403,3 +403,47 @@ fn test_doctype_in_fragment() {
         Err(ParseError::XmlParser(..))
     ));
 }
+
+#[test]
+fn test_doctype_many_typed_attributes() {
+    // every attribute of the document is looked up among the declared
+    // ones, which takes the same time however many there are: with 80,000
+    // declared on one element and 80,000 elements that use the last one,
+    // a lookup that went through the declarations of the element took
+    // 45 seconds without optimizations
+    let count = 80_000;
+    let mut xml = String::from("<!DOCTYPE doc [<!ATTLIST e");
+    for i in 0..count {
+        xml.push_str(&format!(" a{} NMTOKEN #IMPLIED", i));
+    }
+    xml.push('>');
+    // a repeated declaration is kept once
+    for _ in 0..count {
+        xml.push_str("<!ATTLIST p:e p:b ID #IMPLIED>");
+    }
+    xml.push_str("]><doc xmlns:p=\"urn:example:p\">");
+    for i in 0..count {
+        xml.push_str(&format!("<e a{}=\"v\"/><p:e p:b=\"b{}\"/>", count - 1, i));
+    }
+    xml.push_str("</doc>");
+    let start = std::time::Instant::now();
+    let mut xot = Xot::new();
+    let document = xot.parse(&xml).unwrap();
+    let elapsed = start.elapsed();
+    let root = xot.document_element(document).unwrap();
+    assert_eq!(xot.children(root).count(), 2 * count);
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "{:?}",
+        elapsed
+    );
+    // a value that normalization would change is still found
+    xml.insert_str(
+        xml.len() - "</doc>".len(),
+        &format!("<e a{}=\" v\"/>", count - 1),
+    );
+    assert!(matches!(
+        xot.parse(&xml),
+        Err(ParseError::DtdUnsupported(_))
+    ));
+}

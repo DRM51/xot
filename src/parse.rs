@@ -47,9 +47,12 @@ fn prefixed_name(prefix: StrSpan<'_>, name: StrSpan<'_>) -> String {
 struct Dtd {
     /// The general entities that the internal subset declares.
     entities: Vec<Box<str>>,
-    /// The attributes, by element name and then attribute name as written,
-    /// that the internal subset declares with a type other than `CDATA`.
-    typed: HashMap<Box<str>, Vec<Box<str>>>,
+    /// The attributes that the internal subset declares with a type other
+    /// than `CDATA`, each as its element name and its attribute name as
+    /// written, separated by a space (which no name contains): one lookup
+    /// per attribute however many the subset declares, and a declaration
+    /// that is repeated is kept once.
+    typed: HashSet<Box<str>>,
     /// Whether the declaration has an external identifier, so that an
     /// external subset, which is never read, can declare any entity.
     external: bool,
@@ -59,10 +62,11 @@ struct Dtd {
 
 impl Dtd {
     fn new(subset: dtd::InternalSubset, external: bool) -> Self {
-        let mut typed: HashMap<Box<str>, Vec<Box<str>>> = HashMap::new();
-        for (element, attribute) in subset.typed {
-            typed.entry(element).or_default().push(attribute);
-        }
+        let typed = subset
+            .typed
+            .into_iter()
+            .map(|(element, attribute)| format!("{} {}", element, attribute).into_boxed_str())
+            .collect::<HashSet<_>>();
         Dtd {
             entities: subset.entities,
             typed,
@@ -106,28 +110,19 @@ impl Dtd {
         if self.typed.is_empty() {
             return false;
         }
-        let attributes = if element_prefix.is_empty() {
-            self.typed.get(element)
-        } else {
-            self.name.clear();
-            self.name.push_str(element_prefix);
-            self.name.push(':');
-            self.name.push_str(element);
-            self.typed.get(self.name.as_str())
-        };
-        let Some(attributes) = attributes else {
-            return false;
-        };
-        attributes.iter().any(|written| {
-            if attribute_prefix.is_empty() {
-                **written == *attribute
-            } else {
-                written.len() == attribute_prefix.len() + 1 + attribute.len()
-                    && written.starts_with(attribute_prefix)
-                    && written[attribute_prefix.len()..].starts_with(':')
-                    && written.ends_with(attribute)
+        self.name.clear();
+        for (prefix, local, end) in [
+            (element_prefix, element, " "),
+            (attribute_prefix, attribute, ""),
+        ] {
+            if !prefix.is_empty() {
+                self.name.push_str(prefix);
+                self.name.push(':');
             }
-        })
+            self.name.push_str(local);
+            self.name.push_str(end);
+        }
+        self.typed.contains(self.name.as_str())
     }
 }
 
