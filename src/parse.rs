@@ -537,6 +537,32 @@ struct NameIdBuilder<'a> {
     prefix_ids: HashMap<&'a str, PrefixId>,
     /// The ids of the names of this parse, by namespace and local name.
     name_ids: HashMap<(NamespaceId, &'a str), NameId>,
+    /// The name asked for last.
+    last_name: Option<NameId>,
+    /// For each name, at its id modulo the size of the table, the name asked
+    /// for after it the last time: where the elements of a document repeat
+    /// in the same order, the names mostly come in the same order, and
+    /// comparing a name with the one expected costs less than hashing it.
+    next_names: Box<[Option<NextName<'a>>; NEXT_NAMES]>,
+}
+
+/// The size of `NameIdBuilder::next_names`.
+const NEXT_NAMES: usize = 256;
+
+/// A name asked for right after the name `after`, and its id.
+#[derive(Clone, Copy)]
+struct NextName<'a> {
+    after: NameId,
+    namespace_id: NamespaceId,
+    name: &'a str,
+    id: NameId,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests turn the table of next names off, to compare a parse with it
+    /// with a parse without it.
+    static WITHOUT_NEXT_NAMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl<'a> NameIdBuilder<'a> {
@@ -549,6 +575,8 @@ impl<'a> NameIdBuilder<'a> {
             open_elements: Vec::new(),
             prefix_ids: HashMap::new(),
             name_ids: HashMap::new(),
+            last_name: None,
+            next_names: Box::new([None; NEXT_NAMES]),
         }
     }
 
@@ -612,6 +640,42 @@ impl<'a> NameIdBuilder<'a> {
     /// `xot.name_lookup.name_id_mut` gives it.
     #[inline]
     fn name_id(&mut self, namespace_id: NamespaceId, name: &'a str, xot: &mut Xot) -> NameId {
+        #[cfg(test)]
+        if WITHOUT_NEXT_NAMES.with(|without| without.get()) {
+            return self.lookup_name_id(namespace_id, name, xot);
+        }
+        let Some(last) = self.last_name else {
+            let id = self.lookup_name_id(namespace_id, name, xot);
+            self.last_name = Some(id);
+            return id;
+        };
+        let slot = last.0 as usize % NEXT_NAMES;
+        if let Some(next) = self.next_names[slot] {
+            if next.after == last && next.namespace_id == namespace_id && next.name == name {
+                self.last_name = Some(next.id);
+                return next.id;
+            }
+        }
+        let id = self.lookup_name_id(namespace_id, name, xot);
+        self.next_names[slot] = Some(NextName {
+            after: last,
+            namespace_id,
+            name,
+            id,
+        });
+        self.last_name = Some(id);
+        id
+    }
+
+    /// The id of the name `name` in the namespace `namespace_id` from the
+    /// ids of this parse, or from `xot.name_lookup`.
+    #[inline]
+    fn lookup_name_id(
+        &mut self,
+        namespace_id: NamespaceId,
+        name: &'a str,
+        xot: &mut Xot,
+    ) -> NameId {
         *self
             .name_ids
             .entry((namespace_id, name))
@@ -1661,5 +1725,7 @@ fn normalize_xml_id(value: &str) -> String {
     result
 }
 
+#[cfg(test)]
+mod next_name_tests;
 #[cfg(test)]
 mod tests;

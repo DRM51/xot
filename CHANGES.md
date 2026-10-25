@@ -674,6 +674,18 @@
   makes elements by name, such as an XSLT engine building its output,
   retires about 1% fewer instructions.
 
+- The parser remembers, for each name, the name that came right after it
+  the last time, in a table of 256 entries by the id of the name, and
+  compares the next name with that one before it looks the name up by its
+  hash: where the elements of a document repeat in the same order, as in
+  a data file, most names come in the order of the time before. The ids,
+  the tree and the errors are the same as without the table; a test parses
+  documents with and without it, also generated ones.
+  In a micro-benchmark (release, instructions retired, interleaved),
+  parsing a document of 20,000 repeated groups of elements takes 0.958
+  of the instructions of before, and one of 5,000 groups with longer texts
+  0.961.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text
