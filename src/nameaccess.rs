@@ -4,7 +4,7 @@ use genawaiter::yield_;
 
 use crate::access::NodeEdge;
 use crate::error::Error;
-use crate::id::{Name, NameId, NamespaceId, PrefixId};
+use crate::id::{NameId, NamespaceId, PrefixId};
 use crate::output::FullnameSerializer;
 use crate::xmlvalue::Prefixes;
 use crate::xotdata::{Node, Xot};
@@ -115,7 +115,7 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn name_ns(&self, name: &str, namespace_id: NamespaceId) -> Option<NameId> {
-        self.name_lookup.get_id(&Name::new(name, namespace_id))
+        self.name_lookup.name_id(name, namespace_id)
     }
 
     /// Add name with a namespace.
@@ -144,7 +144,7 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn add_name_ns(&mut self, name: &str, namespace_id: NamespaceId) -> NameId {
-        self.name_lookup.get_id_mut(&Name::new(name, namespace_id))
+        self.name_lookup.name_id_mut(name, namespace_id)
     }
 
     /// Look up namespace.

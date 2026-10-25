@@ -10,7 +10,7 @@ use crate::dtd;
 use crate::encoding::decode;
 use crate::entity::{normalize_line_ends, parse_attribute_in, parse_text_in};
 use crate::error::ParseError;
-use crate::id::{Name, NameId, PrefixId};
+use crate::id::{NameId, PrefixId};
 use crate::xmlvalue::{Attribute, Comment, Element, Namespace, ProcessingInstruction, Text, Value};
 use crate::xotdata::{Node, Xot, XMLNS_NAMESPACE, XML_NAMESPACE};
 use crate::NamespaceId;
@@ -514,15 +514,14 @@ struct OpenElement<'a> {
 
 /// The prefixes in scope, and the ids of prefixes and names.
 ///
-/// The ids come from `Xot::prefix_lookup` and `Xot::name_lookup` through
-/// `get_id_mut`, which makes an id the first time it is asked for one. As
-/// a name is a `String` there, finding the id of a name from the text took
-/// a new `String` each time; so this keeps the ids of the prefixes and names
-/// of this parse by the text it read them from, and asks `get_id_mut` only
-/// for those it has not seen yet in this parse. Such a call makes the id
-/// that it made before, in the same order, also when the parse fails; the
-/// calls that it leaves out are those for ids that are there already, which
-/// change nothing.
+/// The ids come from `Xot::prefix_lookup` through `get_id_mut` and from
+/// `Xot::name_lookup` through `name_id_mut`, which make an id the first time
+/// they are asked for one. Each of them hashes the text again, so this keeps
+/// the ids of the prefixes and names of this parse by the text it read them
+/// from, and asks for an id there only for those it has not seen yet in this
+/// parse. Such a call makes the id that it made before, in the same order,
+/// also when the parse fails; the calls that it leaves out are those for ids
+/// that are there already, which change nothing.
 struct NameIdBuilder<'a> {
     /// The bindings in scope, the innermost last: those that every document
     /// has (the prefix `xml`, and the empty prefix for no namespace), then
@@ -610,13 +609,13 @@ impl<'a> NameIdBuilder<'a> {
     }
 
     /// The id of the name `name` in the namespace `namespace_id`, as
-    /// `xot.name_lookup.get_id_mut` gives it.
+    /// `xot.name_lookup.name_id_mut` gives it.
     #[inline]
     fn name_id(&mut self, namespace_id: NamespaceId, name: &'a str, xot: &mut Xot) -> NameId {
         *self
             .name_ids
             .entry((namespace_id, name))
-            .or_insert_with(|| xot.name_lookup.get_id_mut(&Name::new(name, namespace_id)))
+            .or_insert_with(|| xot.name_lookup.name_id_mut(name, namespace_id))
     }
 
     /// The namespace that `prefix_id` is bound to in scope, if any.

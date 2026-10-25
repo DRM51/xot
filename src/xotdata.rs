@@ -1,7 +1,7 @@
 use ahash::{HashMap, HashMapExt};
 
 use crate::arena::{Arena, NodeId};
-use crate::id::{Name, NameId, NameLookup, NamespaceId, NamespaceLookup, PrefixId, PrefixLookup};
+use crate::id::{NameId, NameLookup, NamespaceId, NamespaceLookup, PrefixId, PrefixLookup};
 use crate::xmlvalue::Value;
 
 pub(crate) type XmlArena = Arena<Value>;
@@ -90,8 +90,8 @@ impl Xot {
         let xml_namespace_id = namespace_lookup.get_id_mut(XML_NAMESPACE);
         let xml_prefix_id = prefix_lookup.get_id_mut("xml");
         let mut name_lookup = NameLookup::new();
-        let xml_space_id = name_lookup.get_id_mut(&Name::new("space", xml_namespace_id));
-        let xml_id_id = name_lookup.get_id_mut(&Name::new("id", xml_namespace_id));
+        let xml_space_id = name_lookup.name_id_mut("space", xml_namespace_id);
+        let xml_id_id = name_lookup.name_id_mut("id", xml_namespace_id);
         Xot {
             arena: XmlArena::new(),
             id_nodes_map: HashMap::new(),

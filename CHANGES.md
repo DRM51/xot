@@ -661,6 +661,19 @@
   allocations instead of 14,503,284, nearly all of them made by `Xot::html5`
   for its name lists.
 
+- `Xot::add_name_ns` and `Xot::name_ns` look a name up by the local name
+  and namespace they are given, and make a `String` for the name only when
+  it is new, where they made one for every call; `Xot::add_name` and
+  `Xot::name` go through them, and so does the parser for each name it has
+  not seen yet in a parse. The ids are those of before, in the same order.
+  In a micro-benchmark (release, instructions retired, interleaved),
+  `add_name_ns` of a name that is there already takes 165
+  instructions instead of 453 (0.37), and `name_ns` of 200 names of which
+  half are there 130 instead of 404 a call (0.32); parsing a document of
+  20,000 repeated groups of elements is unchanged (0.999). A program that
+  makes elements by name, such as an XSLT engine building its output,
+  retires about 1% fewer instructions.
+
 ### Other changes
 
 - `Node` is the position of the node and its generation, so its debug text

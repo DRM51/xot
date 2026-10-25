@@ -47,6 +47,24 @@ impl<K: Copy + IdIndex<K>, V: Eq + std::hash::Hash + Clone> IdMap<K, V> {
         }
     }
 
+    /// The id of `value`, made with `make` if there is none yet, as
+    /// `get_id_mut` makes it.
+    pub(crate) fn get_id_or_insert_with<Q>(&mut self, value: &Q, make: impl FnOnce() -> V) -> K
+    where
+        V: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        if let Some(id) = self.by_value.get(value) {
+            *id
+        } else {
+            let id = K::to_id(self.by_id.len());
+            let owned = make();
+            self.by_value.insert(owned.clone(), id);
+            self.by_id.push(owned);
+            id
+        }
+    }
+
     pub(crate) fn get_id<Q>(&self, value: &Q) -> Option<K>
     where
         V: Borrow<Q>,

@@ -5,7 +5,7 @@ mod namespace;
 mod prefix;
 
 pub use name::NameId;
-pub(crate) use name::{Name, NameLookup};
+pub(crate) use name::NameLookup;
 pub use namespace::NamespaceId;
 pub(crate) use namespace::NamespaceLookup;
 pub use prefix::PrefixId;
