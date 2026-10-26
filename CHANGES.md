@@ -733,7 +733,9 @@
   In a micro-benchmark (release, instructions retired, interleaved),
   parsing a document of 20,000 repeated groups of elements takes 0.958
   of the instructions of before, and one of 5,000 groups with longer texts
-  0.961.
+  0.961. The table (8 KiB) is made only once a parse has looked up 8
+  names, so parsing a document or fragment with fewer names costs no more
+  than before.
 
 ### Other changes
 

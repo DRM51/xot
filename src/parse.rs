@@ -537,17 +537,30 @@ struct NameIdBuilder<'a> {
     prefix_ids: HashMap<&'a str, PrefixId>,
     /// The ids of the names of this parse, by namespace and local name.
     name_ids: HashMap<(NamespaceId, &'a str), NameId>,
-    /// The name asked for last.
-    last_name: Option<NameId>,
-    /// For each name, at its id modulo the size of the table, the name asked
-    /// for after it the last time: where the elements of a document repeat
-    /// in the same order, the names mostly come in the same order, and
-    /// comparing a name with the one expected costs less than hashing it.
-    next_names: Box<[Option<NextName<'a>>; NEXT_NAMES]>,
+    /// The name asked for last and the names that came after names before;
+    /// `None` until the parse has looked up `NEXT_NAMES_AFTER` names, so
+    /// that a small document or fragment does not pay for the table.
+    next_names: Option<NextNames<'a>>,
+    /// The names looked up while `next_names` is `None`.
+    names_without_table: usize,
 }
 
-/// The size of `NameIdBuilder::next_names`.
+/// The name asked for last, and for each name, at its id modulo the size
+/// of the table, the name asked for after it the last time: where the
+/// elements of a document repeat in the same order, the names mostly come
+/// in the same order, and comparing a name with the one expected costs less
+/// than hashing it.
+struct NextNames<'a> {
+    last: NameId,
+    table: Box<[Option<NextName<'a>>; NEXT_NAMES]>,
+}
+
+/// The size of `NextNames::table`.
 const NEXT_NAMES: usize = 256;
+
+/// How many names a parse looks up before it makes the table of next
+/// names.
+const NEXT_NAMES_AFTER: usize = 8;
 
 /// A name asked for right after the name `after`, and its id.
 #[derive(Clone, Copy)]
@@ -563,6 +576,10 @@ thread_local! {
     /// Tests turn the table of next names off, to compare a parse with it
     /// with a parse without it.
     static WITHOUT_NEXT_NAMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests make the table of next names at the first name, so that small
+    /// documents use it too, unless they turn this off to test the
+    /// threshold.
+    static NEXT_NAMES_AT_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 impl<'a> NameIdBuilder<'a> {
@@ -575,8 +592,8 @@ impl<'a> NameIdBuilder<'a> {
             open_elements: Vec::new(),
             prefix_ids: HashMap::new(),
             name_ids: HashMap::new(),
-            last_name: None,
-            next_names: Box::new([None; NEXT_NAMES]),
+            next_names: None,
+            names_without_table: 0,
         }
     }
 
@@ -644,27 +661,51 @@ impl<'a> NameIdBuilder<'a> {
         if WITHOUT_NEXT_NAMES.with(|without| without.get()) {
             return self.lookup_name_id(namespace_id, name, xot);
         }
-        let Some(last) = self.last_name else {
+        let Some(next_names) = &mut self.next_names else {
             let id = self.lookup_name_id(namespace_id, name, xot);
-            self.last_name = Some(id);
+            self.count_lookup(id);
             return id;
         };
+        let last = next_names.last;
         let slot = last.0 as usize % NEXT_NAMES;
-        if let Some(next) = self.next_names[slot] {
+        if let Some(next) = &next_names.table[slot] {
             if next.after == last && next.namespace_id == namespace_id && next.name == name {
-                self.last_name = Some(next.id);
-                return next.id;
+                let id = next.id;
+                next_names.last = id;
+                return id;
             }
         }
         let id = self.lookup_name_id(namespace_id, name, xot);
-        self.next_names[slot] = Some(NextName {
-            after: last,
-            namespace_id,
-            name,
-            id,
-        });
-        self.last_name = Some(id);
+        if let Some(next_names) = &mut self.next_names {
+            next_names.table[slot] = Some(NextName {
+                after: last,
+                namespace_id,
+                name,
+                id,
+            });
+            next_names.last = id;
+        }
         id
+    }
+
+    /// Count a lookup made without the table of next names, and make the
+    /// table at the lookup after the first `NEXT_NAMES_AFTER`, with `id`
+    /// as the name asked for last.
+    #[cold]
+    #[inline(never)]
+    fn count_lookup(&mut self, id: NameId) {
+        #[cfg(test)]
+        let at_once = NEXT_NAMES_AT_ONCE.with(|at_once| at_once.get());
+        #[cfg(not(test))]
+        let at_once = false;
+        if at_once || self.names_without_table >= NEXT_NAMES_AFTER {
+            self.next_names = Some(NextNames {
+                last: id,
+                table: Box::new([None; NEXT_NAMES]),
+            });
+        } else {
+            self.names_without_table += 1;
+        }
     }
 
     /// The id of the name `name` in the namespace `namespace_id` from the

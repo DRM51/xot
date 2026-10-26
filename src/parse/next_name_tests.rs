@@ -1,7 +1,7 @@
 //! Tests of the table of next names (`NameIdBuilder::next_names`): a parse
 //! makes the same name, prefix and namespace ids, the same tree and the same
 //! error with the table as without it.
-use super::WITHOUT_NEXT_NAMES;
+use super::{NameIdBuilder, NEXT_NAMES_AFTER, NEXT_NAMES_AT_ONCE, WITHOUT_NEXT_NAMES};
 use crate::{NameId, Xot};
 
 /// What a parse in a new `Xot` made: its result (the serialization, or
@@ -128,6 +128,72 @@ fn processing_instructions_and_failed_parses() {
     assert_same_ids(r#"<r><a/><b/><a/><c:d/></r>"#);
     assert_same_ids(r#"<r><a/><b/><a/><b c="1" c="2"/></r>"#);
     assert_same_ids(r#"<r><a/><b/><a/><b"#);
+}
+
+#[test]
+fn table_made_only_after_the_first_names() {
+    let mut xot = Xot::new();
+    let no_namespace = xot.no_namespace_id;
+    NEXT_NAMES_AT_ONCE.with(|at_once| at_once.set(false));
+    let mut builder = NameIdBuilder::new(&xot);
+    let names = ["record", "item", "tag"];
+    // no table for the first names
+    for i in 0..NEXT_NAMES_AFTER {
+        builder.name_id(no_namespace, names[i % 3], &mut xot);
+        assert!(builder.next_names.is_none(), "{i}");
+    }
+    // the next lookup makes it, with that name as the one asked for last
+    let id = builder.name_id(no_namespace, names[NEXT_NAMES_AFTER % 3], &mut xot);
+    NEXT_NAMES_AT_ONCE.with(|at_once| at_once.set(true));
+    let next_names = builder.next_names.as_ref().unwrap();
+    assert_eq!(next_names.last, id);
+    assert!(next_names.table.iter().all(|next| next.is_none()));
+    // a name after it goes into the table, and is found there the next time
+    let after = builder.name_id(no_namespace, "row", &mut xot);
+    let next_names = builder.next_names.as_mut().unwrap();
+    assert_eq!(
+        next_names
+            .table
+            .iter()
+            .filter(|next| next.is_some())
+            .count(),
+        1
+    );
+    next_names.last = id;
+    assert_eq!(builder.name_id(no_namespace, "row", &mut xot), after);
+    assert_eq!(builder.next_names.as_ref().unwrap().last, after);
+}
+
+#[test]
+fn same_ids_on_either_side_of_the_threshold() {
+    for count in [
+        0,
+        1,
+        NEXT_NAMES_AFTER - 1,
+        NEXT_NAMES_AFTER,
+        NEXT_NAMES_AFTER + 1,
+        200,
+    ] {
+        let mut xml = String::from(r#"<root xmlns:x="urn:example:x">"#);
+        for i in 0..count {
+            // names repeat in groups of three, with one in another order now
+            // and then
+            match i % 5 {
+                4 => xml.push_str(r#"<tag a="1"/>"#),
+                _ => xml.push_str(&format!(r#"<row x:f{}="1"/>"#, i % 2)),
+            }
+        }
+        xml.push_str("</root>");
+        for fragment in [false, true] {
+            let without_table = parse_report(&xml, fragment, true);
+            NEXT_NAMES_AT_ONCE.with(|at_once| at_once.set(false));
+            let lazy_table = parse_report(&xml, fragment, false);
+            NEXT_NAMES_AT_ONCE.with(|at_once| at_once.set(true));
+            let table_at_once = parse_report(&xml, fragment, false);
+            assert_eq!(lazy_table, without_table, "{count}");
+            assert_eq!(table_at_once, without_table, "{count}");
+        }
+    }
 }
 
 #[cfg(feature = "proptest")]
