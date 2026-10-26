@@ -1,0 +1,26 @@
+# xmlparser 0.13.6 (https://github.com/RazrFalcon/xmlparser, MIT or Apache-2.0,
+# by Yevhenii Reizner), as published on crates.io, which xot uses under the MIT
+# licence (LICENSE-MIT), with a faster scan of XML names in
+# `Stream::consume_qname` (src/stream.rs). src/error.rs, src/strspan.rs and
+# src/xmlchar.rs are those of the release, byte for byte; the code of
+# src/lib.rs is too, with a shorter crate documentation.
+[package]
+name = "xmlparser"
+version = "0.13.6"
+authors = ["Yevhenii Reizner"]
+categories = ["parser-implementations"]
+description = "A zero-allocation XML tokenizer: xmlparser 0.13.6 with a faster scan of names."
+documentation = "https://docs.rs/xmlparser/"
+keywords = ["xml", "parser", "tokenizer"]
+license = "MIT"
+repository = "https://github.com/RazrFalcon/xmlparser"
+edition = "2018"
+
+[features]
+default = ["std"]
+std = []
+
+# The release's src/strspan.rs elides a lifetime in a way that newer
+# compilers warn about; the source stays as released.
+[lints.rust]
+mismatched_lifetime_syntaxes = "allow"

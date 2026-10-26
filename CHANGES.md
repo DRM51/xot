@@ -84,6 +84,13 @@
   Code that matched `DtdUnsupported` to find out whether a document has a
   document type declaration no longer can.
 
+- `ParseError::XmlParser` carries the `Error` of the copy of xmlparser
+  0.13.6 that xot now builds (in `xmlparser/`, see below) instead of the
+  `Error` of the xmlparser crate on crates.io. The two types are the same
+  code, but code that matches this variant, or makes one, with the
+  `xmlparser::Error` of its own dependency on xmlparser no longer compiles
+  against it.
+
 ### Features added
 
 - The parser accepts a document type declaration, with or without an
@@ -491,6 +498,25 @@
   to 198 MiB while it grew; parsing now peaks at 154.9 MiB of heap instead
   of 302.0 MiB (the input text included) and at 167.8 MiB of resident
   memory instead of 429.5 MiB, and takes 284 ms instead of 383 ms.
+
+- xot builds the tokenizer of xmlparser 0.13.6 (MIT or Apache-2.0, by
+  Yevhenii Reizner) from a copy in `xmlparser/`, which it uses under the
+  MIT licence (`xmlparser/LICENSE-MIT`), and in which only the scan of XML
+  names (`Stream::consume_qname`) is changed: it goes over the ASCII bytes
+  of a name with a table of 256 entries and checks the bounds once per
+  byte, where it checked each byte with comparisons and its bounds again.
+  The other code is that of the release; the crate documentation is
+  shorter and a few comments are worded differently. A test compares the tokens, the errors
+  (their debug and display text) and the positions with those of
+  xmlparser 0.13.6 itself for every Unicode scalar value in every place of
+  a name (element and attribute names, prefixes, local names, end tags,
+  processing instruction targets, entity references, DOCTYPE and ENTITY
+  names), in documents and fragments, and for random names made of the
+  characters where the classes of name characters change; its quirks are
+  kept, such as `<:a/>` with an empty prefix. In a micro-benchmark
+  (release, instructions retired, interleaved), parsing a document of
+  20,000 repeated groups of elements takes 0.953 of the instructions of
+  before, and one of 5,000 groups with longer texts 0.957.
 
 - Parsing allocates about once for each text node and attribute value, for the
   string that the node keeps, instead of about 3.3 times for each node. Names,
