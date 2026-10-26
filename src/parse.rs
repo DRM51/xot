@@ -580,6 +580,11 @@ thread_local! {
     /// documents use it too, unless they turn this off to test the
     /// threshold.
     static NEXT_NAMES_AT_ONCE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// How many names were found in the table of next names, and how many
+    /// were not while the table was there, so that tests can tell that the
+    /// table is used.
+    static NEXT_NAME_HITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static NEXT_NAME_MISSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl<'a> NameIdBuilder<'a> {
@@ -672,9 +677,13 @@ impl<'a> NameIdBuilder<'a> {
             if next.after == last && next.namespace_id == namespace_id && next.name == name {
                 let id = next.id;
                 next_names.last = id;
+                #[cfg(test)]
+                NEXT_NAME_HITS.with(|hits| hits.set(hits.get() + 1));
                 return id;
             }
         }
+        #[cfg(test)]
+        NEXT_NAME_MISSES.with(|misses| misses.set(misses.get() + 1));
         let id = self.lookup_name_id(namespace_id, name, xot);
         if let Some(next_names) = &mut self.next_names {
             next_names.table[slot] = Some(NextName {

@@ -1,7 +1,10 @@
 //! Tests of the table of next names (`NameIdBuilder::next_names`): a parse
 //! makes the same name, prefix and namespace ids, the same tree and the same
 //! error with the table as without it.
-use super::{NameIdBuilder, NEXT_NAMES_AFTER, NEXT_NAMES_AT_ONCE, WITHOUT_NEXT_NAMES};
+use super::{
+    NameIdBuilder, NEXT_NAMES, NEXT_NAMES_AFTER, NEXT_NAMES_AT_ONCE, NEXT_NAME_HITS,
+    NEXT_NAME_MISSES, WITHOUT_NEXT_NAMES,
+};
 use crate::{NameId, Xot};
 
 /// What a parse in a new `Xot` made: its result (the serialization, or
@@ -37,10 +40,28 @@ fn parse_report(xml: &str, fragment: bool, without_table: bool) -> (String, Vec<
     (result, names)
 }
 
+/// Set the counts of the names found and not found in the table of next
+/// names to 0.
+fn reset_table_use() {
+    NEXT_NAME_HITS.with(|hits| hits.set(0));
+    NEXT_NAME_MISSES.with(|misses| misses.set(0));
+}
+
+/// How many names were found in the table of next names and how many were
+/// not, since `reset_table_use`.
+fn table_use() -> (usize, usize) {
+    (
+        NEXT_NAME_HITS.with(|hits| hits.get()),
+        NEXT_NAME_MISSES.with(|misses| misses.get()),
+    )
+}
+
 fn assert_same_ids(xml: &str) {
     for fragment in [false, true] {
         let with_table = parse_report(xml, fragment, false);
+        reset_table_use();
         let without_table = parse_report(xml, fragment, true);
+        assert_eq!(table_use(), (0, 0), "{}", xml);
         assert_eq!(with_table, without_table, "{}", xml);
     }
 }
@@ -59,12 +80,32 @@ fn record_shaped_repeats() {
     }
     xml.push_str("</root>");
     assert_same_ids(&xml);
+    reset_table_use();
     let (_, names) = parse_report(&xml, false, false);
+    // the names of a record mostly come in the order of the record before
+    let (hits, misses) = table_use();
+    assert!(hits > 4 * misses, "{hits} hits, {misses} misses");
     let locals: Vec<&str> = names.iter().map(|(local, _)| local.as_str()).collect();
     assert_eq!(
         &locals[2..],
         ["root", "record", "id", "kind", "item", "tag", "a", "f0", "row"]
     );
+}
+
+#[test]
+fn names_in_the_same_order_are_found() {
+    let mut xml = String::from(r#"<root xmlns:x="urn:example:x">"#);
+    for i in 0..500 {
+        xml.push_str(&format!(
+            r#"<record id="{i}" x:kind="k"><item>{i}</item><tag a="1">t</tag><x:f0/><row/></record>"#
+        ));
+    }
+    xml.push_str("</root>");
+    reset_table_use();
+    parse_report(&xml, false, false);
+    // root makes the table; the 8 names of the first record and the second
+    // record after row are not in it yet; every other name is
+    assert_eq!(table_use(), (500 * 8 - 9, 9));
 }
 
 #[test]
@@ -89,6 +130,38 @@ fn names_whose_ids_are_256_apart() {
     xml.push_str("<n0/><n1/><n256/><n1/><n256/><n2/><n0/><n2/><n512/><n1/><n512/><n2/>");
     xml.push_str("</root>");
     assert_same_ids(&xml);
+    reset_table_use();
+    parse_report(&xml, false, false);
+    let (hits, misses) = table_use();
+    assert!(hits > 0 && misses > 0, "{hits} hits, {misses} misses");
+}
+
+#[test]
+fn hits_and_collisions_in_the_table() {
+    let mut xot = Xot::new();
+    let no_namespace = xot.no_namespace_id;
+    // the table is made at the first name
+    let mut builder = NameIdBuilder::new(&xot);
+    let names: Vec<String> = (0..300).map(|i| format!("n{i}")).collect();
+    let ids: Vec<NameId> = names
+        .iter()
+        .map(|name| builder.name_id(no_namespace, name, &mut xot))
+        .collect();
+    // new names get consecutive ids, so n(k) and n(k + 256) share a slot
+    for (k, id) in ids.iter().enumerate() {
+        assert_eq!(id.0 as usize, ids[0].0 as usize + k);
+    }
+    assert_eq!(NEXT_NAMES, 256);
+    // the same names in the same order again
+    reset_table_use();
+    for (name, id) in names.iter().zip(&ids) {
+        assert_eq!(builder.name_id(no_namespace, name, &mut xot), *id);
+    }
+    // n0 after n299 was never seen, and goes into the slot of n43; after
+    // n0 .. n43, the slot holds what came after n256 .. n299; after n256
+    // .. n298, it holds what came after n0 .. n42 in this pass; every other
+    // name is found
+    assert_eq!(table_use(), (300 - 88, 1 + 44 + 43));
 }
 
 #[test]
@@ -160,7 +233,9 @@ fn table_made_only_after_the_first_names() {
         1
     );
     next_names.last = id;
+    reset_table_use();
     assert_eq!(builder.name_id(no_namespace, "row", &mut xot), after);
+    assert_eq!(table_use(), (1, 0));
     assert_eq!(builder.next_names.as_ref().unwrap().last, after);
 }
 
