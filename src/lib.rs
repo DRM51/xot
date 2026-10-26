@@ -78,6 +78,7 @@ mod parsedtree;
 #[cfg(feature = "proptest")]
 pub mod proptest;
 mod serialize;
+mod textbuf;
 
 mod unpretty;
 mod valueaccess;

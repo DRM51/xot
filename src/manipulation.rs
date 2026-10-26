@@ -1108,30 +1108,26 @@ impl Xot {
     /// already; `from` keeps its text. If the two are in one slot, that text
     /// is doubled, as when the text that was added was a copy.
     ///
-    /// A text added after grows the string as `push_str` does, with room to
-    /// spare, as the copy that was joined before grew. Where a text added
-    /// before does not fit, the joined text gets a string of its length
-    /// only: the text after is mostly the longer one, and room to spare in
-    /// its string could take much more than the copy that was joined before.
+    /// A joined text of up to 24 bytes stays in the node. A longer text added
+    /// after grows the string as `push_str` does, with room to spare, as the
+    /// copy that was joined before grew. Where a text added before does not
+    /// fit, the joined text gets a string of its length only: the text after
+    /// is mostly the longer one, and room to spare in its string could take
+    /// much more than the copy that was joined before.
     fn join_texts(&mut self, into: Node, from: Node, before: bool) {
         match self.arena.get_pair_mut(into.get(), from.get()) {
             Some((Value::Text(into), Value::Text(from))) => {
                 if !before {
-                    into.text.push_str(&from.text);
-                } else if into.text.capacity() - into.text.len() >= from.text.len() {
-                    into.text.insert_str(0, &from.text);
+                    into.text.push_str(from.text.as_str());
                 } else {
-                    let mut joined = String::with_capacity(from.text.len() + into.text.len());
-                    joined.push_str(&from.text);
-                    joined.push_str(&into.text);
-                    into.text = joined;
+                    into.text.insert_str_at_start(from.text.as_str());
                 }
             }
             Some(_) => unreachable!("Only text nodes are joined"),
             None => {
                 if let Value::Text(text) = self.value_mut(into) {
                     let copy = text.text.clone();
-                    text.text.push_str(&copy);
+                    text.text.push_str(copy.as_str());
                 }
             }
         }

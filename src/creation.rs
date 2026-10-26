@@ -160,7 +160,7 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn new_text(&mut self, text: &str) -> Node {
-        let text = Value::Text(Text::new(text.to_string()));
+        let text = Value::Text(Text::new_from_str(text));
         self.new_node(text)
     }
 

@@ -1,9 +1,11 @@
+use std::borrow::Cow;
 use std::fmt::Debug;
 
 use ahash::AHashMap;
 
 use crate::error::Error;
 use crate::id::{NameId, NamespaceId, PrefixId};
+use crate::textbuf::TextBuf;
 
 /// The type of the XML node.
 ///
@@ -154,25 +156,47 @@ impl Element {
 /// Example: `Bar` in `<foo>Bar</foo>`, or `hello` and `world` in `<greeting>hello<sep/>world</greeting>`.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Text {
-    pub(crate) text: String,
+    pub(crate) text: TextBuf,
 }
 
 impl Text {
     pub(crate) fn new(text: String) -> Self {
-        Text { text }
+        Text {
+            text: TextBuf::from_string(text),
+        }
+    }
+
+    pub(crate) fn new_from_str(text: &str) -> Self {
+        Text {
+            text: TextBuf::new(text),
+        }
+    }
+
+    /// The text `text`, in place if it fits, else in the `String` that
+    /// `text` has or a new one.
+    pub(crate) fn from_cow(text: Cow<'_, str>) -> Self {
+        match text {
+            Cow::Borrowed(text) => Self::new_from_str(text),
+            Cow::Owned(text) => Self::new(text),
+        }
     }
 
     /// Get the text value.
     ///
     /// See [`Xot::text_str`](`crate::Xot::text_str`) and [`Xot::text_content_str`](`crate::Xot::text_content_str`) for
     /// more convenient ways to get text values.
+    #[inline]
     pub fn get(&self) -> &str {
-        &self.text
+        self.text.as_str()
     }
 
     /// Get the text value, as a mutable reference.
+    ///
+    /// A short text is kept in the node itself; this moves it to a `String`
+    /// of its own first, which the node then keeps until the next
+    /// [`Text::set`].
     pub fn get_mut(&mut self) -> &mut String {
-        &mut self.text
+        self.text.get_mut()
     }
 
     /// Set the text value.
@@ -192,7 +216,7 @@ impl Text {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn set<S: Into<String>>(&mut self, text: S) {
-        self.text = text.into();
+        self.text = TextBuf::from_string(text.into());
     }
 }
 

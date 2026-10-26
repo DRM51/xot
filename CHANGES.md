@@ -518,6 +518,29 @@
   instead of 4.1 ms for 5,000 declarations, and 17.4 ms instead of 13.9 ms for
   10,000.
 
+- A text node keeps a text of up to 24 bytes in the node itself, and a
+  longer one in a `String` as before. The node is no larger (a `Value` is
+  40 bytes, a slot of the arena 64), and most texts of a data document (a
+  number, a date, a code, a word or two) no longer take an allocation of
+  their own. The text in place is an `ArrayString` of the `arrayvec` crate
+  (a new dependency, MIT or Apache-2.0), which gives its `str` without
+  validating the bytes again at every read. The parser, `Xot::new_text` and
+  `Xot::append_text` put a short text in place without making a `String`
+  for it first; joining two texts keeps the joined text in place while it
+  fits. `Text::get` reads either kind; `Text::get_mut` moves a text in
+  place to a `String` of its own and returns that, which the node keeps
+  until the next `Text::set`. `Text` compares, hashes and debug-prints as
+  before. Attributes and comments keep their `String`. In a
+  micro-benchmark (release, instructions retired and maximum resident
+  size, interleaved), parsing a document of 20,000 repeated groups of
+  elements whose texts are short takes 0.943 of the instructions and 0.96
+  of the memory of before, and one of 5,000 groups with longer texts 0.964
+  and 0.99; copying the tree takes 0.864 of the instructions and 0.94 of
+  the memory, and serializing it 1.000 of the instructions. A read of a
+  text takes about 2.4 more instructions, for the test of which kind it
+  is: a loop that reads each text of a document takes 1.11 of the
+  instructions of before.
+
 - `Xot::clone_node` and `Xot::clone_with_prefixes` make each copy as they go
   through the tree they copy, instead of collecting the start and the end of
   each of its nodes in a vector first, which for a tree of 2.0M nodes took

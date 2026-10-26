@@ -394,7 +394,7 @@ impl<'a> DocumentBuilder<'a> {
         let last = xot.arena.last_child(self.current_node_id);
         if let Some(last) = last {
             if let Value::Text(last_text) = xot.arena.get_mut(last) {
-                last_text.get_mut().push_str(content);
+                last_text.text.push_str(content);
                 return Some(last);
             }
         }
@@ -407,7 +407,7 @@ impl<'a> DocumentBuilder<'a> {
         if let Some(last) = self.consolidate_text(&content, xot) {
             return Ok(last);
         }
-        Ok(self.add(Value::Text(Text::new(content.into_owned())), xot))
+        Ok(self.add(Value::Text(Text::from_cow(content)), xot))
     }
 
     fn cdata_text(&mut self, content: &str, xot: &mut Xot) -> Result<NodeId, ParseError> {
@@ -417,7 +417,7 @@ impl<'a> DocumentBuilder<'a> {
         if let Some(last) = self.consolidate_text(&content, xot) {
             return Ok(last);
         }
-        Ok(self.add(Value::Text(Text::new(content.into_owned())), xot))
+        Ok(self.add(Value::Text(Text::from_cow(content)), xot))
     }
 
     /// Close the element that was just opened from an empty element tag.
