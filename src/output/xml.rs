@@ -59,6 +59,8 @@ use crate::NameId;
 
 use super::Indentation;
 
+pub use super::xml_serializer::Writer;
+
 /// Parameters for XML generation.
 ///
 /// You can use these parameters with [`Xot::serialize_xml_string`] to control

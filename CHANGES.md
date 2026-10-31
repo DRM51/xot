@@ -93,6 +93,17 @@
 
 ### Features added
 
+- `output::xml::Writer` writes XML incrementally, a start tag, a text, a
+  comment, a processing instruction or an end tag at a time, as a caller
+  produces them, without a tree to serialize. It renders each token as
+  `Xot::serialize_xml_write` renders the token of a tree node (the same
+  escapes, checks and errors, and the same prefixes), so a walk of
+  a document that feeds it gives the same bytes. It keeps no borrow of the
+  `Xot` between calls; the caller gives the namespace declarations of each
+  start tag, whether an element has a child and whether a text is written as
+  CDATA sections. Indentation and a doctype declaration are not supported.
+  The XML serializer shares its renderer; its output does not change.
+
 - The parser accepts a document type declaration, with or without an
   external identifier and an internal subset, and skips it; it used to reject
   every document with one (`ParseError::DtdUnsupported`). Nothing external is
