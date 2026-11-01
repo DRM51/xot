@@ -518,3 +518,16 @@ fn test_parameters_that_need_the_tree() {
         Err(xot::Error::InvalidOperation(_))
     ));
 }
+
+#[test]
+fn test_debug_shows_the_open_elements() {
+    let mut xot = Xot::new();
+    let root = xot.parse("<a><b/></a>").unwrap();
+    let a = xot.document_element(root).unwrap();
+    let mut writer = Writer::new(&xot, &Parameters::default(), Vec::new(), NoopNormalizer).unwrap();
+    assert_eq!(format!("{writer:?}"), "Writer { open_elements: 0, .. }");
+    writer.start_element(&xot, a, &[], true).unwrap();
+    assert_eq!(format!("{writer:?}"), "Writer { open_elements: 1, .. }");
+    writer.end_element(&xot, true).unwrap();
+    assert_eq!(format!("{writer:?}"), "Writer { open_elements: 0, .. }");
+}

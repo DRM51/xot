@@ -102,7 +102,8 @@
   `Xot` between calls; the caller gives the namespace declarations of each
   start tag, whether an element has a child and whether a text is written as
   CDATA sections. Indentation and a doctype declaration are not supported.
-  The XML serializer shares its renderer; its output does not change.
+  The XML serializer shares its renderer; its output does not change. Its
+  `Debug` shows the number of open elements.
 
 - The parser accepts a document type declaration, with or without an
   external identifier and an internal subset, and skips it; it used to reject

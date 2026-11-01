@@ -511,6 +511,14 @@ pub struct Writer<W: Write, N: Normalizer> {
     w: W,
 }
 
+/// Shows the number of open elements; the writer, the normalizer and the
+/// state of the renderer are left out.
+impl<W: Write, N: Normalizer> std::fmt::Debug for Writer<W, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Writer {{ open_elements: {}, .. }}", self.names.len())
+    }
+}
+
 impl<W: Write, N: Normalizer> Writer<W, N> {
     /// A writer into `w`, which first gets the XML declaration of
     /// `parameters`, if any, as [`Xot::serialize_xml_write`] writes it.
