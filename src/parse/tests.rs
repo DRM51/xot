@@ -781,3 +781,13 @@ fn a_sink_outside_the_arena_gets_the_same_results() {
         failed
     );
 }
+
+#[test]
+#[should_panic(expected = "more text for a node that is not a text node")]
+fn more_text_for_a_node_that_is_not_a_text_node_is_a_bug() {
+    let mut xot = Xot::new();
+    let mut sink = MutableSink::default();
+    let document = sink.document(&mut xot);
+    let comment = sink.comment(&mut xot, document, Cow::Borrowed("c"));
+    sink.append_text(&mut xot, comment, "t");
+}

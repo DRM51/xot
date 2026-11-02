@@ -278,8 +278,9 @@ impl TreeSink for MutableSink {
 
     #[inline]
     fn append_text(&mut self, xot: &mut Xot, text: NodeId, content: &str) {
-        if let Value::Text(text) = xot.arena.get_mut(text) {
-            text.text.push_str(content);
+        match xot.arena.get_mut(text) {
+            Value::Text(text) => text.text.push_str(content),
+            _ => unreachable!("more text for a node that is not a text node"),
         }
     }
 
@@ -600,18 +601,14 @@ impl<'a, S: TreeSink> DocumentBuilder<'a, S> {
         Ok(self.add_text(content, xot))
     }
 
-    /// Close the current element, whose parent becomes the current node.
+    /// Close the current element, at its end tag or at the end of its empty
+    /// element tag: its parent becomes the current node.
     fn close_current(&mut self, xot: &mut Xot) -> NodeId {
         let closed_node_id = self.current_node_id;
         self.sink.close_element(xot, closed_node_id);
         self.current_node_id = self.name_id_builder.close();
         self.last_text = None;
         closed_node_id
-    }
-
-    /// Close the element that was just opened from an empty element tag.
-    fn close_element_immediate(&mut self, xot: &mut Xot) -> NodeId {
-        self.close_current(xot)
     }
 
     fn close_element(
@@ -1610,7 +1607,7 @@ impl Xot {
                                     span,
                                     &builder.attribute_spans,
                                 );
-                                let node_id = builder.close_element_immediate(self);
+                                let node_id = builder.close_current(self);
                                 recorder.element_end(node_id, end_span.into());
                             }
                         }
