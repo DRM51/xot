@@ -168,6 +168,46 @@ pub enum NodeView<'a> {
 }
 
 impl NodeView<'_> {
+    /// An owned [`Value`] with what this view holds.
+    ///
+    /// Use it to keep a copy of the value of a node, or to give another node
+    /// the same value with [`Xot::value_mut`](crate::Xot::value_mut), which
+    /// a read by value cannot do itself:
+    ///
+    /// ```rust
+    /// use xot::{Value, Xot};
+    ///
+    /// let mut xot = Xot::new();
+    /// let root = xot.parse("<doc><a/><b/></doc>")?;
+    /// let doc_el = xot.document_element(root).unwrap();
+    /// let a = xot.first_child(doc_el).unwrap();
+    /// let b = xot.next_sibling(a).unwrap();
+    ///
+    /// let value: Value = xot.view(a).to_value();
+    /// *xot.value_mut(b) = value;
+    /// assert_eq!(xot.to_string(root)?, "<doc><a/><a/></doc>");
+    /// # Ok::<(), xot::Error>(())
+    /// ```
+    pub fn to_value(&self) -> Value {
+        match *self {
+            NodeView::Document => Value::Document,
+            NodeView::Element(name_id) => Value::Element(Element::new(name_id)),
+            NodeView::Text(text) => Value::Text(Text::new_from_str(text)),
+            NodeView::Comment(text) => Value::Comment(Comment::new(text.to_string())),
+            NodeView::ProcessingInstruction(target, data) => Value::ProcessingInstruction(
+                ProcessingInstruction::new(target, data.map(str::to_string)),
+            ),
+            NodeView::Attribute(name_id, value) => Value::Attribute(Attribute {
+                name_id,
+                value: value.to_string(),
+            }),
+            NodeView::Namespace(prefix_id, namespace_id) => Value::Namespace(Namespace {
+                prefix_id,
+                namespace_id,
+            }),
+        }
+    }
+
     /// The [`ValueType`] of the node that was read.
     pub fn value_type(&self) -> ValueType {
         match self {

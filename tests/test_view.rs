@@ -116,6 +116,49 @@ fn test_element_by_value() {
 }
 
 #[test]
+fn test_to_value_of_every_kind_of_node() {
+    let mut xot = Xot::new();
+    let root = xot
+        .parse(
+            r#"<!--c--><?pi data?><?empty?><doc xmlns:p="urn:example:p" a="A">text<child/></doc>"#,
+        )
+        .unwrap();
+    let doc_el = xot.document_element(root).unwrap();
+    let mut nodes = vec![root];
+    nodes.extend(xot.children(root));
+    nodes.extend(xot.namespaces(doc_el).nodes());
+    nodes.extend(xot.attributes(doc_el).nodes());
+    nodes.extend(xot.children(doc_el));
+    // a long text, which the tree does not keep in the node itself
+    let long = xot.new_text(&"x".repeat(100));
+    nodes.push(long);
+    let kinds = nodes
+        .iter()
+        .map(|node| xot.value_type(*node))
+        .collect::<Vec<_>>();
+    for kind in [
+        ValueType::Document,
+        ValueType::Element,
+        ValueType::Text,
+        ValueType::Comment,
+        ValueType::ProcessingInstruction,
+        ValueType::Attribute,
+        ValueType::Namespace,
+    ] {
+        assert!(kinds.contains(&kind), "{kind:?}");
+    }
+    for node in nodes {
+        let value = xot.view(node).to_value();
+        assert_eq!(value.value_type(), xot.view(node).value_type());
+        // the owned value equals the stored one, and reads back as the view
+        assert_eq!(&value, &*xot.value_mut(node));
+        let copy = xot.new_text("");
+        *xot.value_mut(copy) = value;
+        assert_eq!(xot.view(copy), xot.view(node), "{node:?}");
+    }
+}
+
+#[test]
 fn test_element_mut_changes_the_name() {
     let mut xot = Xot::new();
     let changed = xot.add_name("changed");

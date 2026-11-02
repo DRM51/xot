@@ -17,7 +17,9 @@
     `Comment(&str)`, `ProcessingInstruction(NameId, Option<&str>)`,
     `Attribute(NameId, &str)` and `Namespace(PrefixId, NamespaceId)`. A
     `match` on `Value::Element(element)` becomes a `match` on
-    `NodeView::Element(name)`.
+    `NodeView::Element(name)`. To copy a value, which `xot.value(node).clone()`
+    did, use `xot.view(node).to_value()`, an owned `Value` that
+    `Xot::value_mut` can give to another node.
   - `Xot::text(node) -> Option<&Text>` is removed. Use `Xot::text_str(node)
     -> Option<&str>`.
   - `Xot::comment(node) -> Option<&Comment>` is removed. Use
@@ -143,7 +145,8 @@
 ### Features added
 
 - `NodeView` and `Xot::view`: a read of the value of a node by value (see
-  the breaking changes). `NodeView::value_type` gives its `ValueType`.
+  the breaking changes). `NodeView::value_type` gives its `ValueType`, and
+  `NodeView::to_value` an owned `Value` with what it holds.
 
 - `MutableElement` and `MutableNamespace`, what `Xot::element_mut` and
   `Xot::namespace_node_mut` now return (see the breaking changes).
