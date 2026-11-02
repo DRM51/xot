@@ -7,7 +7,8 @@
 - The value of a node is now read by value: the reads that returned a
   reference to the stored value are removed or return values, so that the
   way a document stores its nodes does not show in the API. Code that
-  calls them no longer compiles. `Xot::value_mut`, the `_mut` accessors and
+  calls them no longer compiles. `Xot::value_mut`, the `_mut` accessors
+  other than `Xot::element_mut` and `Xot::namespace_node_mut` (see below) and
   the mutable maps (`Xot::attributes_mut`, `Xot::namespaces_mut`) are
   unchanged. The removed and changed reads, with what replaces them:
 
@@ -25,12 +26,25 @@
     `Xot::text_content_str(node) -> Option<&str>`, which also gives
     `Some("")` for an element without children.
   - `Xot::element(node)` returns `Option<Element>` instead of
-    `Option<&Element>`. `Element` is `Copy`.
+    `Option<&Element>`. `Element` is `Copy`, and `Element::set_name` is no
+    longer public, so that a change cannot go to a copy instead of the tree
+    (`xot.element(node).unwrap().set_name(name)` would compile and change
+    nothing). `Xot::element_mut(node)` returns `Option<MutableElement<'_>>`
+    instead of `Option<&mut Element>`: its `name` and `set_name` read and
+    change the element in the tree; bind it with `let mut` to call
+    `set_name`. `Xot::set_element_name` is unchanged; use it, or
+    `Xot::element_mut`, where code renamed an element through
+    `Xot::value_mut`.
   - `Xot::processing_instruction(node)` returns `Option<(NameId,
     Option<&str>)>`, the target and the data, instead of
     `Option<&ProcessingInstruction>`.
   - `Xot::namespace_node(node)` returns `Option<Namespace>` instead of
-    `Option<&Namespace>`. `Namespace` is now `Copy`.
+    `Option<&Namespace>`. `Namespace` is now `Copy`, and
+    `Namespace::set_namespace` is removed for the same reason as
+    `Element::set_name`. `Xot::namespace_node_mut(node)` returns
+    `Option<MutableNamespace<'_>>` instead of `Option<&mut Namespace>`: its
+    `prefix`, `namespace` and `set_namespace` read and change the namespace
+    node in the tree.
   - `Xot::attribute_node(node)` returns `Option<(NameId, &str)>`, the name
     and the value, instead of `Option<&Attribute>`.
   - The maps of `Xot::attributes` (`Attributes`) and `Xot::namespaces`
@@ -130,6 +144,9 @@
 
 - `NodeView` and `Xot::view`: a read of the value of a node by value (see
   the breaking changes). `NodeView::value_type` gives its `ValueType`.
+
+- `MutableElement` and `MutableNamespace`, what `Xot::element_mut` and
+  `Xot::namespace_node_mut` now return (see the breaking changes).
 
 - `output::xml::Writer` writes XML incrementally, a start tag, a text, a
   comment, a processing instruction or an end tag at a time, as a caller

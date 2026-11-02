@@ -1,6 +1,7 @@
 use crate::access::NodeEdge;
 use crate::xmlvalue::{
-    Attribute, Comment, Element, Namespace, NodeView, ProcessingInstruction, Text, Value, ValueType,
+    Attribute, Comment, Element, MutableElement, MutableNamespace, Namespace, NodeView,
+    ProcessingInstruction, Text, Value, ValueType,
 };
 use crate::xotdata::{Node, Xot};
 use crate::NameId;
@@ -280,10 +281,8 @@ impl Xot {
     /// If this node's value is an element, return it.
     ///
     /// The [`Element`] is returned by value; it holds the name of the
-    /// element.
-    ///
-    /// See also [`Xot::element_mut()`] if you want to manipulate
-    /// an element value.
+    /// element. It is a copy, without a setter: to change the name, use
+    /// [`Xot::element_mut()`] or [`Xot::set_element_name()`].
     ///
     /// ```rust
     /// use xot::Xot;
@@ -308,7 +307,8 @@ impl Xot {
         }
     }
 
-    /// If this node's value is an element, return a mutable reference to it.
+    /// If this node's value is an element, return a [`MutableElement`] to
+    /// change it.
     ///
     /// You can use this to change an element's name.
     ///
@@ -321,7 +321,7 @@ impl Xot {
     /// let doc_el = xot.document_element(root)?;
     /// let child_el = xot.first_child(doc_el).unwrap();
     ///
-    /// let element = xot.element_mut(child_el).unwrap();
+    /// let mut element = xot.element_mut(child_el).unwrap();
     /// element.set_name(changed);
     ///
     /// assert_eq!(xot.to_string(root)?, r#"<doc><changed/></doc>"#);
@@ -329,10 +329,10 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     #[inline]
-    pub fn element_mut(&mut self, node: Node) -> Option<&mut Element> {
+    pub fn element_mut(&mut self, node: Node) -> Option<MutableElement<'_>> {
         let xml_node = self.value_mut(node);
         if let Value::Element(element) = xml_node {
-            Some(element)
+            Some(MutableElement::new(element))
         } else {
             None
         }
@@ -477,7 +477,8 @@ impl Xot {
     /// If this node's value is a namespace node, return it.
     ///
     /// The [`Namespace`] is returned by value; it holds the prefix and the
-    /// namespace.
+    /// namespace. It is a copy, without a setter: to change the namespace,
+    /// use [`Xot::namespace_node_mut()`].
     #[inline]
     pub fn namespace_node(&self, node: Node) -> Option<Namespace> {
         match self.value(node) {
@@ -486,12 +487,13 @@ impl Xot {
         }
     }
 
-    /// Manipulate namespace node value
+    /// If this node's value is a namespace node, return a
+    /// [`MutableNamespace`] to change it.
     #[inline]
-    pub fn namespace_node_mut(&mut self, node: Node) -> Option<&mut Namespace> {
+    pub fn namespace_node_mut(&mut self, node: Node) -> Option<MutableNamespace<'_>> {
         let xml_node = self.value_mut(node);
         if let Value::Namespace(namespace) = xml_node {
-            Some(namespace)
+            Some(MutableNamespace::new(namespace))
         } else {
             None
         }

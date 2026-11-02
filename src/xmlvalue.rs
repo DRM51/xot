@@ -225,9 +225,49 @@ impl Element {
         self.name_id
     }
 
-    /// Set the name of an element
-    pub fn set_name(&mut self, name_id: NameId) {
+    pub(crate) fn set_name(&mut self, name_id: NameId) {
         self.name_id = name_id;
+    }
+}
+
+/// A change of the value of an element node, from
+/// [`Xot::element_mut`](crate::Xot::element_mut).
+///
+/// An [`Element`] read with [`Xot::element`](crate::Xot::element) is a copy
+/// and has no setter, so that a change cannot go to the copy instead of the
+/// tree:
+///
+/// ```rust,compile_fail
+/// use xot::Xot;
+///
+/// let mut xot = Xot::new();
+/// let changed = xot.add_name("changed");
+/// let root = xot.parse("<doc/>").unwrap();
+/// let doc_el = xot.document_element(root).unwrap();
+/// // does not compile: an Element read by value cannot be changed
+/// xot.element(doc_el).unwrap().set_name(changed);
+/// ```
+///
+/// Change it through this type instead, or with
+/// [`Xot::set_element_name`](crate::Xot::set_element_name).
+#[derive(Debug)]
+pub struct MutableElement<'a> {
+    element: &'a mut Element,
+}
+
+impl<'a> MutableElement<'a> {
+    pub(crate) fn new(element: &'a mut Element) -> Self {
+        Self { element }
+    }
+
+    /// The name of the element.
+    pub fn name(&self) -> NameId {
+        self.element.name_id
+    }
+
+    /// Set the name of the element.
+    pub fn set_name(&mut self, name_id: NameId) {
+        self.element.set_name(name_id);
     }
 }
 
@@ -394,10 +434,49 @@ impl Namespace {
     pub fn namespace(&self) -> NamespaceId {
         self.namespace_id
     }
+}
+
+/// A change of the value of a namespace node, from
+/// [`Xot::namespace_node_mut`](crate::Xot::namespace_node_mut).
+///
+/// A [`Namespace`] read with
+/// [`Xot::namespace_node`](crate::Xot::namespace_node) is a copy and has no
+/// setter, so that a change cannot go to the copy instead of the tree:
+///
+/// ```rust,compile_fail
+/// use xot::Xot;
+///
+/// let mut xot = Xot::new();
+/// let other = xot.add_namespace("urn:example:other");
+/// let root = xot.parse(r#"<doc xmlns:p="urn:example:p"/>"#).unwrap();
+/// let doc_el = xot.document_element(root).unwrap();
+/// let node = xot.namespaces(doc_el).nodes().next().unwrap();
+/// // does not compile: a Namespace read by value cannot be changed
+/// xot.namespace_node(node).unwrap().set_namespace(other);
+/// ```
+#[derive(Debug)]
+pub struct MutableNamespace<'a> {
+    namespace: &'a mut Namespace,
+}
+
+impl<'a> MutableNamespace<'a> {
+    pub(crate) fn new(namespace: &'a mut Namespace) -> Self {
+        Self { namespace }
+    }
+
+    /// Get prefix
+    pub fn prefix(&self) -> PrefixId {
+        self.namespace.prefix_id
+    }
+
+    /// Get namespace
+    pub fn namespace(&self) -> NamespaceId {
+        self.namespace.namespace_id
+    }
 
     /// Set namespace id
     pub fn set_namespace(&mut self, namespace_id: NamespaceId) {
-        self.namespace_id = namespace_id;
+        self.namespace.namespace_id = namespace_id;
     }
 }
 

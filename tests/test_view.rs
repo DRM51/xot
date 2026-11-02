@@ -122,9 +122,46 @@ fn test_element_mut_changes_the_name() {
     let root = xot.parse("<doc><child/></doc>").unwrap();
     let doc_el = xot.document_element(root).unwrap();
     let child = xot.first_child(doc_el).unwrap();
-    xot.element_mut(child).unwrap().set_name(changed);
+    let child_name = xot.name("child").unwrap();
+    let before = xot.element(child).unwrap();
+    let mut element = xot.element_mut(child).unwrap();
+    assert_eq!(element.name(), child_name);
+    element.set_name(changed);
+    assert_eq!(element.name(), changed);
     assert_eq!(xot.element(child).unwrap().name(), changed);
     assert_eq!(xot.view(child), NodeView::Element(changed));
+    // the copy read before the change keeps the name it had
+    assert_eq!(before.name(), child_name);
+    assert!(xot.element_mut(root).is_none());
+}
+
+#[test]
+fn test_namespace_node_mut_changes_the_namespace() {
+    let mut xot = Xot::new();
+    let root = xot
+        .parse(r#"<doc xmlns:p="urn:example:p"><child/></doc>"#)
+        .unwrap();
+    let doc_el = xot.document_element(root).unwrap();
+    let p = xot.prefix("p").unwrap();
+    let urn_p = xot.namespace("urn:example:p").unwrap();
+    let other = xot.add_namespace("urn:example:other");
+    let node = xot.namespaces(doc_el).get_node(p).unwrap();
+    let before = xot.namespace_node(node).unwrap();
+    let mut namespace = xot.namespace_node_mut(node).unwrap();
+    assert_eq!(namespace.prefix(), p);
+    assert_eq!(namespace.namespace(), urn_p);
+    namespace.set_namespace(other);
+    assert_eq!(namespace.namespace(), other);
+    assert_eq!(xot.namespace_node(node).unwrap().namespace(), other);
+    assert_eq!(xot.view(node), NodeView::Namespace(p, other));
+    assert_eq!(xot.namespaces(doc_el).get(p), Some(other));
+    // the copy read before the change keeps the namespace it had
+    assert_eq!(before.namespace(), urn_p);
+    assert!(xot.namespace_node_mut(doc_el).is_none());
+    assert_eq!(
+        xot.to_string(root).unwrap(),
+        r#"<doc xmlns:p="urn:example:other"><child/></doc>"#
+    );
 }
 
 #[test]

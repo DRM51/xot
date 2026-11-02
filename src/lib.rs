@@ -99,7 +99,7 @@ pub use parse::{Span, SpanInfo, SpanInfoKey};
 pub use parsedtree::ParsedTree;
 pub use serialize::Html5;
 pub use xmlvalue::{
-    Attribute, Comment, Element, Namespace, NodeView, Prefixes, ProcessingInstruction, Text, Value,
-    ValueType,
+    Attribute, Comment, Element, MutableElement, MutableNamespace, Namespace, NodeView, Prefixes,
+    ProcessingInstruction, Text, Value, ValueType,
 };
 pub use xotdata::{Node, Xot};
