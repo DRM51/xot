@@ -576,7 +576,8 @@
 - xot builds the tokenizer of xmlparser 0.13.6 (MIT or Apache-2.0, by
   Yevhenii Reizner) from a copy in `xmlparser/`, which it uses under the
   MIT licence (`xmlparser/LICENSE-MIT`), and in which only the scan of XML
-  names (`Stream::consume_qname`) is changed: it goes over the ASCII bytes
+  names (`Stream::consume_qname`) and the start of an XML declaration (see
+  below) are changed. The scan of names goes over the ASCII bytes
   of a name with a table of 256 entries and checks the bounds once per
   byte, where it checked each byte with comparisons and its bounds again.
   The other code is that of the release; the crate documentation is
@@ -591,6 +592,26 @@
   (release, instructions retired, interleaved), parsing a document of
   20,000 repeated groups of elements takes 0.953 of the instructions of
   before, and one of 5,000 groups with longer texts 0.957.
+
+- `Xot::parse_bytes` parses a document in UTF-8, with or without a byte
+  order mark, from the bytes themselves, where it decoded them into a new
+  `String` first: it no longer holds a copy of the whole text while it
+  parses. The encoding is detected as before, and bytes that are not valid
+  UTF-8 give the same `ParseError::InvalidByteSequence`, with the same
+  span. A document in another encoding is decoded as before.
+
+- The copy of xmlparser in `xmlparser/` takes `<?xml` followed by a tab, a
+  line feed or a carriage return, not only a space, for the start of the XML
+  declaration at the start of a document, as XML 1.0 allows (production
+  [23] `XMLDecl`, where `S` is any XML white space). The parser used to put a
+  space there in a copy of the whole text before it tokenized it; it now
+  tokenizes the text as it is, and the trees, errors and error positions do
+  not change. xmlparser 0.13.6 on crates.io does not do this, and reads such
+  a declaration as a processing instruction with the target `xml`, which
+  the parser rejects: xot must be built with its copy of xmlparser, as a
+  path or git dependency does. A package made with `cargo package` or
+  `cargo publish` would depend on xmlparser 0.13.6 from crates.io instead,
+  and would then reject such documents.
 
 - Parsing allocates about once for each text node and attribute value, for the
   string that the node keeps, instead of about 3.3 times for each node. Names,

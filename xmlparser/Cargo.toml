@@ -1,15 +1,19 @@
 # xmlparser 0.13.6 (https://github.com/RazrFalcon/xmlparser, MIT or Apache-2.0,
 # by Yevhenii Reizner), as published on crates.io, which xot uses under the MIT
 # licence (LICENSE-MIT), with a faster scan of XML names in
-# `Stream::consume_qname` (src/stream.rs). src/error.rs, src/strspan.rs and
-# src/xmlchar.rs are those of the release, byte for byte; the code of
-# src/lib.rs is too, with a shorter crate documentation.
+# `Stream::consume_qname` (src/stream.rs), and with `<?xml` followed by a tab,
+# a line feed or a carriage return taken for the start of an XML declaration
+# (`Tokenizer`, State::Declaration, in src/lib.rs), which xot depends on:
+# compiled with xmlparser 0.13.6 from crates.io instead of this copy, xot
+# rejects such a document. src/error.rs, src/strspan.rs and src/xmlchar.rs are those of
+# the release, byte for byte; the other code of src/lib.rs is too, with
+# a shorter crate documentation.
 [package]
 name = "xmlparser"
 version = "0.13.6"
 authors = ["Yevhenii Reizner"]
 categories = ["parser-implementations"]
-description = "A zero-allocation XML tokenizer: xmlparser 0.13.6 with a faster scan of names."
+description = "A zero-allocation XML tokenizer: xmlparser 0.13.6 with a faster scan of names and any white space after <?xml."
 documentation = "https://docs.rs/xmlparser/"
 keywords = ["xml", "parser", "tokenizer"]
 license = "MIT"
