@@ -1,9 +1,7 @@
 use std::borrow::Cow;
 
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
-use xmlparser::{
-    ElementEnd, EntityDefinition, ExternalId, StrSpan, Stream, TextPos, Token, Tokenizer,
-};
+use xmlparser::{ElementEnd, EntityDefinition, ExternalId, StrSpan, Token, Tokenizer};
 
 use crate::arena::NodeId;
 use crate::dtd;
@@ -1164,8 +1162,7 @@ impl Xot {
         xml: &str,
         recorder: &mut R,
     ) -> Result<Node, ParseError> {
-        let text = declaration_with_space(xml);
-        let tokenizer = Tokenizer::from(text.as_ref());
+        let tokenizer = Tokenizer::from(xml);
         self.parse_tokens_as_document(tokenizer, xml, recorder)
     }
 
@@ -1285,9 +1282,8 @@ impl Xot {
         }
     }
 
-    /// Parse the tokens of `xml`, which the tokenizer reads, maybe with a
-    /// space in the place of one character (see `declaration_with_space`),
-    /// and tell `recorder` the spans of the nodes made.
+    /// Parse the tokens of `xml`, which the tokenizer reads, and tell
+    /// `recorder` the spans of the nodes made.
     fn _parse<'a, R: SpanRecorder>(
         &mut self,
         mut tokenizer: Tokenizer<'a>,
@@ -1307,7 +1303,7 @@ impl Xot {
             if let Some(token) = tokenizer.next() {
                 let token = match token {
                     Ok(token) => token,
-                    Err(e) => return Err(tokenizer_error(e, position, &tokenizer, xml)),
+                    Err(e) => return Err(tokenizer_error(e, position)),
                 };
                 match token {
                     Attribute {
@@ -1489,8 +1485,9 @@ impl Xot {
 
     /// Parse bytes containing XML into a node.
     ///
-    /// This decodes the bytes into a Rust string (UTF-8) first, then parses
-    /// this string.
+    /// A document in UTF-8 is parsed from the bytes themselves, without a
+    /// copy; a document in another encoding is decoded into a Rust string
+    /// (UTF-8) first, then this string is parsed.
     ///
     /// The encoding follows the rules of the XML specification: a byte
     /// order mark decides it; without one, the encoding declaration in the XML
@@ -1590,7 +1587,7 @@ fn skip_internal_subset(
                     ));
                 }
             }
-            Some(Err(e)) => return Err(tokenizer_error(e, position, tokenizer, xml)),
+            Some(Err(e)) => return Err(tokenizer_error(e, position)),
             // the tokenizer gives nothing else in an internal subset, and
             // ends without an error if the internal subset is not closed
             Some(Ok(_)) | None => return Err(ParseError::DtdUnsupported(start.into())),
@@ -1614,18 +1611,10 @@ fn check_external_id(external_id: &Option<ExternalId<'_>>, xml: &str) -> Result<
 }
 
 /// The error for `error`, which the tokenizer gave when it read from the
-/// byte index `position` of `xml`.
+/// byte index `position` of the text.
 #[cold]
-fn tokenizer_error(
-    error: xmlparser::Error,
-    position: usize,
-    tokenizer: &Tokenizer<'_>,
-    xml: &str,
-) -> ParseError {
-    // the lines and columns of the error count in the text that the
-    // tokenizer reads, where a newline in `xml` can be a space
-    let text = tokenizer.stream().span().as_str();
-    ParseError::XmlParser(reposition_error(error, text, xml), position)
+fn tokenizer_error(error: xmlparser::Error, position: usize) -> ParseError {
+    ParseError::XmlParser(error, position)
 }
 
 /// Tell `recorder` the span of the name of the element `node_id`, which was
@@ -1640,97 +1629,6 @@ fn record_element_start<R: SpanRecorder>(
     for &(name_id, name_span, value_span) in attribute_spans {
         recorder.attribute(node_id, name_id, name_span, value_span);
     }
-}
-
-/// `xml`, with a space in the place of the white space after `<?xml` if it
-/// starts with `<?xml` followed by a tab, a newline or a carriage return,
-/// after a byte order mark if it has one.
-///
-/// An XML declaration is `<?xml` followed by white space
-/// (https://www.w3.org/TR/xml/#sec-prolog-dtd), which can be a tab, a
-/// newline or a carriage return, but the tokenizer only takes `<?xml`
-/// followed by a space for one, and reads the others as a processing
-/// instruction with the target `xml`. The tokenizer skips a byte order mark
-/// before it. A space instead of this one character changes neither the
-/// declaration nor the byte index of anything in the text, but a newline
-/// replaced by a space moves the lines and columns that follow it, so
-/// `_parse` counts those of an error in `xml` again.
-fn declaration_with_space(xml: &str) -> Cow<'_, str> {
-    let start = if xml.starts_with('\u{FEFF}') {
-        '\u{FEFF}'.len_utf8()
-    } else {
-        0
-    };
-    match xml.as_bytes()[start..] {
-        [b'<', b'?', b'x', b'm', b'l', b'\t' | b'\n' | b'\r', ..] => {
-            let mut xml = xml.to_string();
-            let white_space = start + "<?xml".len();
-            xml.replace_range(white_space..white_space + 1, " ");
-            Cow::Owned(xml)
-        }
-        _ => Cow::Borrowed(xml),
-    }
-}
-
-/// `error` from the tokenizer, with its lines and columns, which count in
-/// `text`, the text that the tokenizer reads, counted in `xml` instead.
-///
-/// The two texts have their characters at the same byte indices (see
-/// `declaration_with_space`), so each position is found as a byte index in
-/// `text`, and that index as a line and a column in `xml`, as the tokenizer
-/// counts them.
-fn reposition_error(error: xmlparser::Error, text: &str, xml: &str) -> xmlparser::Error {
-    use xmlparser::Error as E;
-    use xmlparser::StreamError as S;
-
-    let at = |pos: TextPos| Stream::from(xml).gen_text_pos_from(text_pos_index(text, pos));
-    let stream_error = |e: S| match e {
-        S::NonXmlChar(c, pos) => S::NonXmlChar(c, at(pos)),
-        S::InvalidChar(actual, expected, pos) => S::InvalidChar(actual, expected, at(pos)),
-        S::InvalidCharMultiple(actual, expected, pos) => {
-            S::InvalidCharMultiple(actual, expected, at(pos))
-        }
-        S::InvalidQuote(c, pos) => S::InvalidQuote(c, at(pos)),
-        S::InvalidSpace(c, pos) => S::InvalidSpace(c, at(pos)),
-        S::InvalidString(expected, pos) => S::InvalidString(expected, at(pos)),
-        S::UnexpectedEndOfStream
-        | S::InvalidName
-        | S::InvalidReference
-        | S::InvalidExternalID
-        | S::InvalidCommentData
-        | S::InvalidCommentEnd
-        | S::InvalidCharacterData => e,
-    };
-    match error {
-        E::InvalidDeclaration(e, pos) => E::InvalidDeclaration(stream_error(e), at(pos)),
-        E::InvalidComment(e, pos) => E::InvalidComment(stream_error(e), at(pos)),
-        E::InvalidPI(e, pos) => E::InvalidPI(stream_error(e), at(pos)),
-        E::InvalidDoctype(e, pos) => E::InvalidDoctype(stream_error(e), at(pos)),
-        E::InvalidEntity(e, pos) => E::InvalidEntity(stream_error(e), at(pos)),
-        E::InvalidElement(e, pos) => E::InvalidElement(stream_error(e), at(pos)),
-        E::InvalidAttribute(e, pos) => E::InvalidAttribute(stream_error(e), at(pos)),
-        E::InvalidCdata(e, pos) => E::InvalidCdata(stream_error(e), at(pos)),
-        E::InvalidCharData(e, pos) => E::InvalidCharData(stream_error(e), at(pos)),
-        E::UnknownToken(pos) => E::UnknownToken(at(pos)),
-    }
-}
-
-/// The byte index in `text` of a line and a column as the tokenizer counts
-/// them, both from 1: the line is one more than the number of newlines
-/// before the index, and the column one more than the number of characters
-/// between the last of these newlines and the index.
-fn text_pos_index(text: &str, pos: TextPos) -> usize {
-    let line_start = match (pos.row as usize).checked_sub(2) {
-        Some(newlines) => match text.match_indices('\n').nth(newlines) {
-            Some((newline, _)) => newline + 1,
-            None => return text.len(),
-        },
-        None => 0,
-    };
-    text[line_start..]
-        .char_indices()
-        .nth((pos.col as usize).saturating_sub(1))
-        .map_or(text.len(), |(index, _)| line_start + index)
 }
 
 /// Whether Namespaces in XML 1.0 allows a declaration of `prefix`, or of the

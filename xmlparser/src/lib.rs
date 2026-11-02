@@ -367,7 +367,13 @@ impl<'a> Tokenizer<'a> {
         match self.state {
             State::Declaration => {
                 self.state = State::AfterDeclaration;
-                if s.starts_with(b"<?xml ") {
+                // an XML declaration is `<?xml` followed by white space
+                // (https://www.w3.org/TR/xml/#sec-prolog-dtd)
+                if s.starts_with(b"<?xml ")
+                    || s.starts_with(b"<?xml\t")
+                    || s.starts_with(b"<?xml\n")
+                    || s.starts_with(b"<?xml\r")
+                {
                     Some(Self::parse_declaration(s))
                 } else {
                     None

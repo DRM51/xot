@@ -19,6 +19,8 @@
 //! names that IANA registers for them, except those with `:`, which an
 //! encoding declaration cannot have.
 
+use std::borrow::Cow;
+
 use encoding_rs::{DecoderResult, Encoding, REPLACEMENT, UTF_16BE, UTF_16LE, UTF_8};
 
 use crate::{error::ParseError, Span};
@@ -137,18 +139,32 @@ impl Family {
 ///
 /// A byte order mark is removed. A byte sequence that is not valid in the
 /// encoding is a fatal error (XML 1.0 section 4.3.3), reported with the
-/// offsets of its bytes in `data`.
-pub(crate) fn decode(data: &[u8]) -> Result<String, ParseError> {
+/// offsets of its bytes in `data`. A document in UTF-8 is the text of `data`
+/// itself, after its byte order mark; the others are decoded into a string.
+pub(crate) fn decode(data: &[u8]) -> Result<Cow<'_, str>, ParseError> {
     // the byte order mark, if any, is not part of the text
     let (encoding, start) = encoding(data)?;
     let char_for = match encoding {
-        DocumentEncoding::Whatwg(encoding) => return decode_whatwg(data, start, encoding),
+        DocumentEncoding::Whatwg(encoding) if encoding == UTF_8 => return decode_utf8(data, start),
+        DocumentEncoding::Whatwg(encoding) => {
+            return decode_whatwg(data, start, encoding).map(Cow::Owned)
+        }
         DocumentEncoding::Ascii => ascii,
         DocumentEncoding::Latin1 => latin1,
         DocumentEncoding::Latin5 => latin5,
         DocumentEncoding::Thai => thai,
     };
-    decode_single_byte(data, start, encoding.name(), char_for)
+    decode_single_byte(data, start, encoding.name(), char_for).map(Cow::Owned)
+}
+
+/// The text of `data` from the byte at `start` on, which is in UTF-8, as a
+/// slice of `data`. Where it is not valid UTF-8, the error is the one the
+/// decoder of encoding_rs gives, as for the other encodings.
+fn decode_utf8(data: &[u8], start: usize) -> Result<Cow<'_, str>, ParseError> {
+    match std::str::from_utf8(&data[start..]) {
+        Ok(text) => Ok(Cow::Borrowed(text)),
+        Err(_) => decode_whatwg(data, start, UTF_8).map(Cow::Owned),
+    }
 }
 
 /// Decode `data` from the byte at `start` on, in an encoding with one byte
@@ -1189,5 +1205,161 @@ mod tests {
             decode(b"\xEF\xBB\xBF<?xml version=\"1.0\" encoding=\"latin1\"?><p>\xc3\xa9</p>"),
             Err(ParseError::EncodingConflict(..))
         ));
+    }
+
+    /// The documents of the tests above, and some more, in the encodings
+    /// that `decode` knows, with and without a byte order mark.
+    fn samples() -> Vec<Vec<u8>> {
+        let mut samples: Vec<Vec<u8>> = [
+            &b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><a/>"[..],
+            b"<a/>",
+            b"<p>\xc3\xa9</p>",
+            b"\xEF\xBB\xBF<p/>",
+            b"\xEF\xBB\xBF<?xml version=\"1.0\" encoding=\"utf-8\"?><p>\xc3\xa9</p>",
+            b"<?xml\tversion=\"1.0\"?><a/>",
+            b"<?xml\nversion=\"1.0\"\nencoding=\"UTF-8\"?>\n<a/>",
+            b"<?xml\rversion=\"1.0\"?><a/>",
+            b"\xEF\xBB\xBF<?xml\r\nversion=\"1.0\"?><a/>",
+            b"<?xml version=\"1.0\" encoding=\"US-ASCII\"?><p>a</p>",
+            b"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><p>\xe9</p>",
+            b"<?xml version=\"1.0\" encoding=\"windows-1252\"?><p>\x80\x9f</p>",
+            b"<?xml version=\"1.0\" encoding=\"ISO-8859-9\"?><p>\xfd\xfe</p>",
+            b"<?xml version=\"1.0\" encoding=\"TIS-620\"?><p>\xa1</p>",
+            b"<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><p>\x82\xa0</p>",
+            // not valid in their encodings
+            b"\xff<p/>",
+            b"\xEF\xBB\xBF\xff<p/>",
+            b"<p>\xe9</p>",
+            b"<p>\xe2\x82</p>",
+            b"<p/>\xe2\x82",
+            b"<p/>\xc3",
+            b"<p>\xed\xa0\x80</p>",
+            b"<p>\xc0\xaf</p>",
+            b"<p>\xf4\x90\x80\x80</p>",
+            b"<?xml version=\"1.0\" encoding=\"US-ASCII\"?><p>\xe9</p>",
+            b"<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><p>\xa0</p>",
+            // not decoded
+            b"\xEF\xBB\xBF<?xml version=\"1.0\" encoding=\"latin1\"?><p/>",
+            b"<?xml version=\"1.0\" encoding=\"no-such-encoding\"?><p/>",
+        ]
+        .iter()
+        .map(|data| data.to_vec())
+        .collect();
+        samples.push(utf16le("\u{FEFF}<p>\u{10000}</p>"));
+        samples.push(utf16be(
+            "\u{FEFF}<?xml version=\"1.0\" encoding=\"UTF-16\"?><p/>",
+        ));
+        samples.push(utf16le("<?xml version=\"1.0\" encoding=\"UTF-16\"?><p/>"));
+        samples.push(utf32le("<?xml version=\"1.0\"?><p/>"));
+        samples
+    }
+
+    /// What decoding gave before UTF-8 was read in place: encoding_rs's
+    /// decoder for every encoding of the WHATWG Encoding Standard.
+    fn decoded_as_before(data: &[u8]) -> Result<String, ParseError> {
+        let (encoding, start) = encoding(data)?;
+        match encoding {
+            Whatwg(encoding) => decode_whatwg(data, start, encoding),
+            _ => decode(data).map(Cow::into_owned),
+        }
+    }
+
+    fn result_text<T: std::fmt::Debug>(result: &Result<T, ParseError>) -> String {
+        match result {
+            Ok(value) => format!("Ok({:?})", value),
+            Err(e) => format!("Err({:?}, {})", e, e),
+        }
+    }
+
+    #[test]
+    fn test_decode_utf8_is_borrowed() {
+        for data in samples() {
+            let (encoding, start) = match encoding(&data) {
+                Ok(found) => found,
+                Err(_) => continue,
+            };
+            match decode(&data) {
+                Ok(Cow::Borrowed(text)) => {
+                    assert_eq!(encoding, Whatwg(UTF_8), "{:?}", data);
+                    // the text is the bytes after the byte order mark
+                    assert_eq!(text.as_ptr(), data[start..].as_ptr());
+                    assert_eq!(text.len(), data.len() - start);
+                }
+                Ok(Cow::Owned(_)) => assert_ne!(encoding, Whatwg(UTF_8), "{:?}", data),
+                Err(_) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_decode_as_before() {
+        for data in samples() {
+            assert_eq!(
+                result_text(&decode(&data)),
+                result_text(&decoded_as_before(&data)),
+                "{:?}",
+                data
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_utf8_at_start_middle_and_end() {
+        assert_eq!(invalid(b"\xff<p/>"), ("UTF-8".to_string(), Span::new(0, 1)));
+        assert_eq!(
+            invalid(b"\xEF\xBB\xBF\xc3<p/>"),
+            ("UTF-8".to_string(), Span::new(3, 4))
+        );
+        assert_eq!(
+            invalid(b"<p>a\xc0\xafb</p>"),
+            ("UTF-8".to_string(), Span::new(4, 5))
+        );
+        assert_eq!(
+            invalid(b"<p>\xf4\x90\x80\x80</p>"),
+            ("UTF-8".to_string(), Span::new(3, 4))
+        );
+        assert_eq!(invalid(b"<p/>\xc3"), ("UTF-8".to_string(), Span::new(4, 5)));
+        assert_eq!(
+            invalid(b"<p/>\xf0\x9f\x98"),
+            ("UTF-8".to_string(), Span::new(4, 7))
+        );
+    }
+
+    #[test]
+    fn test_decode_large_utf8_with_bom() {
+        let mut data = b"\xEF\xBB\xBF<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<doc>".to_vec();
+        for i in 0..20_000 {
+            data.extend(format!("<record n=\"{}\">caf\u{e9} \u{10000}</record>\n", i).bytes());
+        }
+        data.extend(b"</doc>");
+        match decode(&data).unwrap() {
+            Cow::Borrowed(text) => assert_eq!(text.as_bytes(), &data[3..]),
+            Cow::Owned(_) => panic!("UTF-8 is decoded into a copy"),
+        }
+        // a byte that is not valid near the end is found
+        let at = data.len() - 10;
+        data[at] = 0xff;
+        assert_eq!(invalid(&data), ("UTF-8".to_string(), Span::new(at, at + 1)));
+    }
+
+    #[test]
+    fn test_parse_bytes_as_parse_after_decoding() {
+        for data in samples() {
+            let mut xot = crate::Xot::new();
+            let from_bytes = xot
+                .parse_bytes(&data)
+                .map(|doc| xot.to_string(doc).unwrap());
+            let mut xot = crate::Xot::new();
+            let from_text = match decoded_as_before(&data) {
+                Ok(text) => xot.parse(&text).map(|doc| xot.to_string(doc).unwrap()),
+                Err(e) => Err(e),
+            };
+            assert_eq!(
+                result_text(&from_bytes),
+                result_text(&from_text),
+                "{:?}",
+                data
+            );
+        }
     }
 }

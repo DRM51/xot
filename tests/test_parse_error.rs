@@ -639,8 +639,8 @@ fn xmlparser_error(xml: &str) -> (xmlparser::Error, usize) {
 
 #[test]
 fn test_xmlparser_error_position_after_declaration_with_newline() {
-    // the tokenizer reads a space in the place of a newline after `<?xml`,
-    // but the lines and columns are those of the parsed text
+    // the tokenizer reads the newline after `<?xml` as the white space of
+    // the declaration, and counts the lines and columns of the parsed text
     let xml = "<?xml\nversion=\"1.0\"?>\n<a>\n<b =\"x\"/></a>";
     let (e, position) = xmlparser_error(xml);
     assert_eq!(e.pos(), xmlparser::TextPos::new(4, 3));

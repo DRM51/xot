@@ -1132,6 +1132,47 @@ fn test_parse_declaration_with_other_white_space_after_byte_order_mark() {
 }
 
 #[test]
+fn test_parse_declaration_with_each_white_space_character() {
+    // each white space character after `<?xml`, with and without a byte
+    // order mark, as a string and as bytes, gives what a space in its place
+    // gives
+    let documents = [
+        "<?xml{}version=\"1.0\"{}encoding=\"UTF-8\"?>\n<a b=\"1\">t<c/></a>",
+        "<?xml{}version=\"1.0\"{}standalone=\"yes\"?><a/>",
+        "<?xml{}version=\"1.1\"{}?><a/>",
+        "<?xml{}version=\"1.0\"{}encoding=?><a/>",
+        "<?xml{}version=\"1.0\"{}?>\n<a>\n<b =\"x\"/></a>",
+        "<?xml{}version=\"1.0\"{}?><a></b>",
+    ];
+    let result_text = |result: Result<String, ParseError>| match result {
+        Ok(text) => Ok(text),
+        Err(e) => Err((format!("{:?}", e.span()), std::mem::discriminant(&e))),
+    };
+    for document in documents {
+        for bom in ["", "\u{FEFF}"] {
+            let with =
+                |white_space: &str| format!("{}{}", bom, document.replacen("{}", white_space, 2));
+            let mut xot = Xot::new();
+            let parse =
+                |xot: &mut Xot, xml: &str| xot.parse(xml).map(|doc| xot.to_string(doc).unwrap());
+            for white_space in ["\t", "\n", "\r", "\r\n", " \t"] {
+                // as many spaces, so that the spans are the same
+                let expected = result_text(parse(&mut xot, &with(&" ".repeat(white_space.len()))));
+                let xml = with(white_space);
+                assert_eq!(result_text(parse(&mut xot, &xml)), expected, "{:?}", xml);
+                let from_bytes = xot
+                    .parse_bytes(xml.as_bytes())
+                    .map(|doc| xot.to_string(doc).unwrap());
+                // the spans of errors in bytes count the byte order mark too
+                if bom.is_empty() || from_bytes.is_ok() {
+                    assert_eq!(result_text(from_bytes), expected, "{:?}", xml);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_end_tag_with_another_prefix_for_the_same_namespace() {
     // an end tag matches its start tag when it has the same name, even
     // with another prefix for its namespace
