@@ -7,6 +7,22 @@ use crate::xotdata::{Node, Xot};
 use crate::NameId;
 
 /// ## Value and type access
+///
+/// The reads return values: [`Xot::view`] and the typed reads give names and
+/// ids by value and text as string slices.
+///
+/// The `_mut` accessors change a node in the tree, in one of two forms.
+/// [`Xot::element_mut`] and [`Xot::namespace_node_mut`] return a
+/// [`MutableElement`] and a [`MutableNamespace`]: [`Element`] and
+/// [`Namespace`] are `Copy`, so a setter on them would change a copy and
+/// leave the tree as it was, and the setters are on these two types only.
+/// [`Xot::value_mut`], [`Xot::text_mut`], [`Xot::text_content_mut`],
+/// [`Xot::comment_mut`], [`Xot::processing_instruction_mut`] and
+/// [`Xot::attribute_node_mut`] return a mutable reference to the stored
+/// value: [`Text`], [`Comment`], [`ProcessingInstruction`] and [`Attribute`]
+/// are not `Copy`, and the reads give string slices or views instead of
+/// these values, so their setters cannot reach a copy by mistake. None of
+/// the `_mut` accessors returns an [`Error`](crate::Error).
 impl Xot {
     /// Read the value of this node, by value.
     ///

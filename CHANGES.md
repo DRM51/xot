@@ -7,10 +7,19 @@
 - The value of a node is now read by value: the reads that returned a
   reference to the stored value are removed or return values, so that the
   way a document stores its nodes does not show in the API. Code that
-  calls them no longer compiles. `Xot::value_mut`, the `_mut` accessors
-  other than `Xot::element_mut` and `Xot::namespace_node_mut` (see below) and
-  the mutable maps (`Xot::attributes_mut`, `Xot::namespaces_mut`) are
-  unchanged. The removed and changed reads, with what replaces them:
+  calls them no longer compiles. The changes in place keep two forms.
+  `Xot::value_mut`, `Xot::text_mut`, `Xot::text_content_mut`,
+  `Xot::comment_mut`, `Xot::processing_instruction_mut`,
+  `Xot::attribute_node_mut` and the mutable maps (`Xot::attributes_mut`,
+  `Xot::namespaces_mut`) are unchanged and still return a mutable reference
+  to the stored value: `Text`, `Comment`, `ProcessingInstruction` and
+  `Attribute` are not `Copy`, and the reads now give string slices or views
+  instead of these values, so their setters cannot reach a copy by mistake.
+  Only `Xot::element_mut` and `Xot::namespace_node_mut` return new types
+  (`MutableElement`, `MutableNamespace`, see below), because `Element` and
+  `Namespace` became `Copy` and lost their setters: a setter on a copy would
+  compile and leave the tree as it was. None of the `_mut` accessors returns
+  an `Error`. The removed and changed reads, with what replaces them:
 
   - `Xot::value(node) -> &Value` is removed. Use the new `Xot::view(node) ->
     NodeView<'_>`: `NodeView::Document`, `Element(NameId)`, `Text(&str)`,
