@@ -51,10 +51,10 @@ fn parse_with<R: SpanRecorder>(
     let mut xot = Xot::new();
     match mode {
         Mode::Document => xot.parse_document(xml, recorder),
-        Mode::Fragment => xot.parse_fragment_document(xml, recorder),
+        Mode::Fragment => xot.parse_fragment_document(xml, recorder, MutableSink::default()),
         Mode::FragmentTokensAsDocument => {
             let tokenizer = Tokenizer::from_fragment(xml, 0..xml.len());
-            xot.parse_tokens_as_document(tokenizer, xml, recorder)
+            xot.parse_tokens_as_document(tokenizer, xml, recorder, MutableSink::default())
         }
     }
 }
@@ -302,6 +302,7 @@ enum Event {
     Comment(NodeId, NodeId, String),
     ProcessingInstruction(NodeId, NodeId, NameId, Option<String>),
     Close(NodeId),
+    Complete(NodeId),
     Abandon,
 }
 
@@ -309,6 +310,7 @@ enum Event {
 /// `MutableSink`, so that the parse makes its tree as before.
 struct RecordingSink {
     events: Rc<RefCell<Vec<Event>>>,
+    inner: MutableSink,
 }
 
 impl RecordingSink {
@@ -319,13 +321,13 @@ impl RecordingSink {
 
 impl TreeSink for RecordingSink {
     fn document(&mut self, xot: &mut Xot) -> NodeId {
-        let node = MutableSink.document(xot);
+        let node = self.inner.document(xot);
         self.record(Event::Document(node));
         node
     }
 
     fn element(&mut self, xot: &mut Xot, parent: NodeId, name_id: NameId) -> NodeId {
-        let node = MutableSink.element(xot, parent, name_id);
+        let node = self.inner.element(xot, parent, name_id);
         self.record(Event::Element(parent, node, name_id));
         node
     }
@@ -337,30 +339,30 @@ impl TreeSink for RecordingSink {
         prefix_id: PrefixId,
         namespace_id: NamespaceId,
     ) {
-        MutableSink.namespace(xot, element, prefix_id, namespace_id);
+        self.inner.namespace(xot, element, prefix_id, namespace_id);
         self.record(Event::Namespace(element, prefix_id, namespace_id));
     }
 
     fn attribute(&mut self, xot: &mut Xot, element: NodeId, name_id: NameId, value: Cow<'_, str>) {
         self.record(Event::Attribute(element, name_id, value.to_string()));
-        MutableSink.attribute(xot, element, name_id, value);
+        self.inner.attribute(xot, element, name_id, value);
     }
 
     fn text(&mut self, xot: &mut Xot, parent: NodeId, content: Cow<'_, str>) -> NodeId {
         let text = content.to_string();
-        let node = MutableSink.text(xot, parent, content);
+        let node = self.inner.text(xot, parent, content);
         self.record(Event::Text(parent, node, text));
         node
     }
 
     fn append_text(&mut self, xot: &mut Xot, text: NodeId, content: &str) {
-        MutableSink.append_text(xot, text, content);
+        self.inner.append_text(xot, text, content);
         self.record(Event::AppendText(text, content.to_string()));
     }
 
     fn comment(&mut self, xot: &mut Xot, parent: NodeId, content: Cow<'_, str>) -> NodeId {
         let text = content.to_string();
-        let node = MutableSink.comment(xot, parent, content);
+        let node = self.inner.comment(xot, parent, content);
         self.record(Event::Comment(parent, node, text));
         node
     }
@@ -373,22 +375,25 @@ impl TreeSink for RecordingSink {
         content: Option<Cow<'_, str>>,
     ) -> NodeId {
         let text = content.as_ref().map(|c| c.to_string());
-        let node = MutableSink.processing_instruction(xot, parent, target, content);
+        let node = self
+            .inner
+            .processing_instruction(xot, parent, target, content);
         self.record(Event::ProcessingInstruction(parent, node, target, text));
         node
     }
 
     fn close_element(&mut self, xot: &mut Xot, element: NodeId) {
-        MutableSink.close_element(xot, element);
+        self.inner.close_element(xot, element);
         self.record(Event::Close(element));
     }
 
-    fn element_name(&self, xot: &Xot, node: NodeId) -> Option<NameId> {
-        MutableSink.element_name(xot, node)
+    fn complete(&mut self, xot: &mut Xot, document: NodeId) {
+        self.inner.complete(xot, document);
+        self.record(Event::Complete(document));
     }
 
     fn abandon(&mut self, xot: &mut Xot) {
-        MutableSink.abandon(xot);
+        self.inner.abandon(xot);
         self.record(Event::Abandon);
     }
 }
@@ -433,7 +438,9 @@ fn replay(events: &[Event]) -> String {
     };
     add(&mut views, None, *document, &events[0]);
     open.push(*document);
+    let mut done = false;
     for event in later {
+        assert!(!done, "nothing after complete: {:?}", event);
         let current = *open
             .last()
             .expect("an event after the document node was closed");
@@ -497,11 +504,16 @@ fn replay(events: &[Event]) -> String {
                 in_start_tag = None;
                 last = Some(*element);
             }
+            Event::Complete(node) => {
+                assert_eq!(*node, *document, "the document node is complete");
+                assert_eq!(open, [*document], "every element is closed at the end");
+                done = true;
+            }
             Event::Document(_) => panic!("a second document node"),
             Event::Abandon => panic!("abandon in a parse that did not fail"),
         }
     }
-    assert_eq!(open, [*document], "every element is closed");
+    assert!(done, "a parse that did not fail ends with complete");
     fn show(
         views: &HashMap<NodeId, (Event, Vec<NodeId>, String)>,
         node: NodeId,
@@ -536,39 +548,29 @@ fn replay(events: &[Event]) -> String {
     out
 }
 
-/// Parse `xml` in `mode` through a recording sink, check what the sink got
-/// against the tree, and check that the result is that of the parse
-/// through the sink of `Xot`'s trees.
+/// Parse `xml` in `mode` through a recording sink, by the functions that
+/// `parse`, `parse_fragment` and the tests of the checks of a document use,
+/// check what the sink got against the tree, and check that the result is
+/// that of the parse through the sink of `Xot`'s trees.
 fn check_sink(xml: &str, mode: Mode) -> bool {
     let expected = parse_with(xml, mode, &mut ErrorSpans::default()).map(|_| ());
     let mut xot = Xot::new();
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = RecordingSink {
         events: events.clone(),
-    };
-    let tokenizer = match mode {
-        Mode::Document => Tokenizer::from(xml),
-        _ => Tokenizer::from_fragment(xml, 0..xml.len()),
+        inner: MutableSink::default(),
     };
     let mut spans = ErrorSpans::default();
-    let result = xot
-        ._parse(tokenizer, xml, &mut spans, sink)
-        .and_then(|builder| {
-            let checked = match mode {
-                Mode::Fragment if builder.is_current_node_document() => Ok(()),
-                Mode::Fragment => Err(ParseError::UnclosedTag(
-                    spans.unclosed_element(Node::new(builder.current_node_id)),
-                )),
-                _ => xot.check_document(&builder, xml, &mut spans),
-            };
-            match checked {
-                Ok(()) => Ok(builder.tree),
-                Err(error) => {
-                    builder.abandon(&mut xot);
-                    Err(error)
-                }
-            }
-        });
+    let result = match mode {
+        Mode::Document => xot.parse_tokens_as_document(Tokenizer::from(xml), xml, &mut spans, sink),
+        Mode::Fragment => xot.parse_fragment_document(xml, &mut spans, sink),
+        Mode::FragmentTokensAsDocument => xot.parse_tokens_as_document(
+            Tokenizer::from_fragment(xml, 0..xml.len()),
+            xml,
+            &mut spans,
+            sink,
+        ),
+    };
     assert_eq!(
         format!("{:?}", result.as_ref().map(|_| ())),
         format!("{:?}", expected),
@@ -577,22 +579,27 @@ fn check_sink(xml: &str, mode: Mode) -> bool {
         xml
     );
     let events = events.borrow();
+    let count = |kind: fn(&Event) -> bool| events.iter().filter(|e| kind(e)).count();
+    let completes = count(|e| matches!(e, Event::Complete(_)));
+    let abandons = count(|e| matches!(e, Event::Abandon));
     match result {
         Ok(document) => {
-            let mut tree = String::new();
-            dump(&xot, document, 0, &mut tree);
-            assert_eq!(replay(&events), tree, "{:?} {:?}", mode, xml);
-            true
-        }
-        Err(_) => {
-            assert_eq!(events.last(), Some(&Event::Abandon), "{:?} {:?}", mode, xml);
+            assert_eq!((completes, abandons), (1, 0), "{:?} {:?}", mode, xml);
             assert_eq!(
-                events.iter().filter(|e| **e == Event::Abandon).count(),
-                1,
+                events.last(),
+                Some(&Event::Complete(document.get())),
                 "{:?} {:?}",
                 mode,
                 xml
             );
+            let mut tree = String::new();
+            dump(&xot, document.get(), 0, &mut tree);
+            assert_eq!(replay(&events), tree, "{:?} {:?}", mode, xml);
+            true
+        }
+        Err(_) => {
+            assert_eq!((completes, abandons), (0, 1), "{:?} {:?}", mode, xml);
+            assert_eq!(events.last(), Some(&Event::Abandon), "{:?} {:?}", mode, xml);
             false
         }
     }
@@ -654,6 +661,121 @@ fn the_sink_gets_each_node_in_document_order() {
     }
     assert!(
         parsed >= 1000 && failed >= 1000,
+        "{} parsed, {} failed",
+        parsed,
+        failed
+    );
+}
+
+/// A sink that keeps nothing and gives ids of its own, which no slot of
+/// the arena has: if the builder or the checks after the last token read
+/// or changed the arena through such an id, the parse would panic or leave
+/// a slot behind.
+#[derive(Default)]
+struct DetachedSink {
+    ids: u32,
+}
+
+impl DetachedSink {
+    fn next_id(&mut self) -> NodeId {
+        self.ids += 1;
+        NodeId::first_in(std::num::NonZeroU32::new(self.ids).unwrap())
+    }
+}
+
+impl TreeSink for DetachedSink {
+    fn document(&mut self, _xot: &mut Xot) -> NodeId {
+        self.next_id()
+    }
+
+    fn element(&mut self, _xot: &mut Xot, _parent: NodeId, _name_id: NameId) -> NodeId {
+        self.next_id()
+    }
+
+    fn namespace(&mut self, _: &mut Xot, _: NodeId, _: PrefixId, _: NamespaceId) {}
+
+    fn attribute(&mut self, _: &mut Xot, _: NodeId, _: NameId, _: Cow<'_, str>) {}
+
+    fn text(&mut self, _xot: &mut Xot, _parent: NodeId, _content: Cow<'_, str>) -> NodeId {
+        self.next_id()
+    }
+
+    fn append_text(&mut self, _xot: &mut Xot, _text: NodeId, _content: &str) {}
+
+    fn comment(&mut self, _xot: &mut Xot, _parent: NodeId, _content: Cow<'_, str>) -> NodeId {
+        self.next_id()
+    }
+
+    fn processing_instruction(
+        &mut self,
+        _xot: &mut Xot,
+        _parent: NodeId,
+        _target: NameId,
+        _content: Option<Cow<'_, str>>,
+    ) -> NodeId {
+        self.next_id()
+    }
+
+    fn close_element(&mut self, _xot: &mut Xot, _element: NodeId) {}
+
+    fn complete(&mut self, _xot: &mut Xot, _document: NodeId) {}
+
+    fn abandon(&mut self, _xot: &mut Xot) {}
+}
+
+#[test]
+fn a_sink_outside_the_arena_gets_the_same_results() {
+    let mut texts: Vec<String> = SINK_SAMPLES.iter().map(|s| s.to_string()).collect();
+    let mut rng = Rng::new(3);
+    for _ in 0..1000 {
+        let mut text = String::new();
+        random_content(&mut rng, 3, &mut text);
+        texts.push(text);
+    }
+    for _ in 0..1000 {
+        let len = 4 + rng.below(9);
+        texts.push((0..len).map(|_| PIECES[rng.below(PIECES.len())]).collect());
+    }
+    let (mut parsed, mut failed) = (0, 0);
+    for text in &texts {
+        for mode in MODES {
+            let xml = text.as_str();
+            let expected = parse_with(xml, mode, &mut ErrorSpans::default()).map(|_| ());
+            let mut xot = Xot::new();
+            let fresh = xot.arena.fresh_start();
+            let mut spans = ErrorSpans::default();
+            let sink = DetachedSink::default();
+            let result = match mode {
+                Mode::Document => {
+                    xot.parse_tokens_as_document(Tokenizer::from(xml), xml, &mut spans, sink)
+                }
+                Mode::Fragment => xot.parse_fragment_document(xml, &mut spans, sink),
+                Mode::FragmentTokensAsDocument => xot.parse_tokens_as_document(
+                    Tokenizer::from_fragment(xml, 0..xml.len()),
+                    xml,
+                    &mut spans,
+                    sink,
+                ),
+            };
+            assert_eq!(
+                format!("{:?}", result.as_ref().map(|_| ())),
+                format!("{:?}", expected),
+                "{:?} {:?}",
+                mode,
+                xml
+            );
+            // the document node has the first id that the sink gave
+            if let Ok(document) = result {
+                assert_eq!(document.get().index1(), 1, "{:?} {:?}", mode, xml);
+                parsed += 1;
+            } else {
+                failed += 1;
+            }
+            assert_eq!(xot.arena.fresh_start(), fresh, "{:?} {:?}", mode, xml);
+        }
+    }
+    assert!(
+        parsed >= 500 && failed >= 500,
         "{} parsed, {} failed",
         parsed,
         failed

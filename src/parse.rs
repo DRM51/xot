@@ -153,8 +153,18 @@ fn is_changed_by_token_normalization(value: &str) -> bool {
 /// A sink stores what the builder hands over, in document order: a node
 /// comes after its parent, the namespace nodes and then the attribute nodes
 /// of an element come right after the element, and its content after them.
-/// When a parse fails, the sink gets [`TreeSink::abandon`] and nothing after
-/// it.
+/// The builder keeps what it checks after the last token (the open elements
+/// and their names, the elements and the first text under the document
+/// node) itself, so it never asks the sink about a node it handed over.
+/// When the parse does not fail, the sink gets [`TreeSink::complete`];
+/// when it fails, it gets [`TreeSink::abandon`]; either is the last call
+/// it gets.
+///
+/// The builder names each node by the id that the sink gives for it. That
+/// id is a [`NodeId`], as the id of the document node is the `Node` that
+/// the parse returns, and the `xml:id` map of the document is kept by id:
+/// a sink that does not store its nodes in the arena gives ids of its own,
+/// which the reads of a `Xot` can tell from those of the arena.
 pub(crate) trait TreeSink {
     /// The document node, which comes first.
     fn document(&mut self, xot: &mut Xot) -> NodeId;
@@ -199,8 +209,9 @@ pub(crate) trait TreeSink {
     /// The end of `element`: its content is complete.
     fn close_element(&mut self, xot: &mut Xot, element: NodeId);
 
-    /// The name of `node`, a node of this parse, if it is an element.
-    fn element_name(&self, xot: &Xot, node: NodeId) -> Option<NameId>;
+    /// The parse did not fail: `document`, the document node, is complete
+    /// and checked.
+    fn complete(&mut self, xot: &mut Xot, document: NodeId);
 
     /// The parse failed: nothing that it made is part of a document.
     fn abandon(&mut self, xot: &mut Xot);
@@ -208,7 +219,12 @@ pub(crate) trait TreeSink {
 
 /// The sink of the trees of a [`Xot`]: each node takes a slot of the arena
 /// and is appended to its parent as it comes.
-pub(crate) struct MutableSink;
+#[derive(Default)]
+pub(crate) struct MutableSink {
+    /// What `Arena::fresh_start` said right before the document node took
+    /// its slot: whether the tree can be kept (see `Xot::keep_parsed`).
+    fresh: Option<std::num::NonZeroU32>,
+}
 
 impl MutableSink {
     #[inline]
@@ -222,6 +238,7 @@ impl MutableSink {
 impl TreeSink for MutableSink {
     #[inline]
     fn document(&mut self, xot: &mut Xot) -> NodeId {
+        self.fresh = xot.arena.fresh_start();
         xot.arena.new_node(Value::Document)
     }
 
@@ -297,11 +314,8 @@ impl TreeSink for MutableSink {
     fn close_element(&mut self, _xot: &mut Xot, _element: NodeId) {}
 
     #[inline]
-    fn element_name(&self, xot: &Xot, node: NodeId) -> Option<NameId> {
-        match xot.arena.get(node) {
-            Value::Element(element) => Some(element.name_id),
-            _ => None,
-        }
+    fn complete(&mut self, xot: &mut Xot, document: NodeId) {
+        xot.keep_parsed(self.fresh, Node::new(document));
     }
 
     /// The nodes made stay where they are, in a tree that nothing refers to,
@@ -322,6 +336,9 @@ struct DocumentBuilder<'a, S: TreeSink> {
     /// The text node that came last, while it is the last child of the
     /// current node: text that follows it is added to it.
     last_text: Option<NodeId>,
+    /// The nodes under the document node that the checks of a document
+    /// look at.
+    top_level: TopLevel,
     name_id_builder: NameIdBuilder<'a>,
     element_builder: Option<ElementBuilder<'a>>,
     /// The attributes of the start tag that is being read. The vector is
@@ -352,6 +369,7 @@ impl<'a, S: TreeSink> DocumentBuilder<'a, S> {
             tree: document,
             current_node_id: document,
             last_text: None,
+            top_level: TopLevel::default(),
             name_id_builder,
             element_builder: None,
             attributes: Vec::new(),
@@ -479,17 +497,25 @@ impl<'a, S: TreeSink> DocumentBuilder<'a, S> {
         let ElementBuilder { prefix, name } = self.element_builder.take().unwrap();
         let span = Span::from_prefix_name(prefix, name);
 
-        // the declarations of the start tag are in scope from here on
-        self.name_id_builder
-            .open(self.current_node_id, prefix.as_str(), name.as_str());
-
+        // the declarations of the start tag are in scope for its name
         let name_id = self.name_id_builder.element_name_id(
             prefix.as_str(),
             name.as_str(),
             prefix.into(),
             xot,
         )?;
+        // and from here on until it is closed
+        self.name_id_builder.open(
+            self.current_node_id,
+            prefix.as_str(),
+            name.as_str(),
+            name_id,
+        );
+
         let node_id = self.sink.element(xot, self.current_node_id, name_id);
+        if self.current_node_id == self.tree {
+            self.top_level.element(node_id);
+        }
         self.current_node_id = node_id;
         self.last_text = None;
 
@@ -554,6 +580,9 @@ impl<'a, S: TreeSink> DocumentBuilder<'a, S> {
             return last;
         }
         let node_id = self.sink.text(xot, self.current_node_id, content);
+        if self.current_node_id == self.tree && self.top_level.text.is_none() {
+            self.top_level.text = Some(node_id);
+        }
         self.last_text = Some(node_id);
         node_id
     }
@@ -603,6 +632,7 @@ impl<'a, S: TreeSink> DocumentBuilder<'a, S> {
         let Some(open) = self.name_id_builder.innermost() else {
             return Err(invalid_close_tag());
         };
+        let open_name_id = open.name_id;
         // an end tag with the prefix and the local name of the start tag has
         // its name, as the same declarations are in scope; with another
         // prefix it can still have the same name, or one that is not
@@ -614,10 +644,8 @@ impl<'a, S: TreeSink> DocumentBuilder<'a, S> {
                 prefix.into(),
                 xot,
             )?;
-            if let Some(element_name_id) = self.sink.element_name(xot, self.current_node_id) {
-                if element_name_id != name_id {
-                    return Err(invalid_close_tag());
-                }
+            if open_name_id != name_id {
+                return Err(invalid_close_tag());
             }
         }
         Ok(self.close_current(xot))
@@ -660,9 +688,69 @@ impl<'a, S: TreeSink> DocumentBuilder<'a, S> {
         self.current_node_id == self.tree
     }
 
+    /// Check that the parse made a well-formed document: no element is left
+    /// open, and the document node has one element and no text.
+    fn check_document<R: SpanRecorder>(
+        &self,
+        xml: &str,
+        recorder: &mut R,
+    ) -> Result<(), ParseError> {
+        // the current node is the document node when every element is
+        // closed; the span of the innermost open element is the problem
+        // if not
+        if !self.is_current_node_document() {
+            return Err(ParseError::UnclosedTag(
+                recorder.unclosed_element(Node::new(self.current_node_id)),
+            ));
+        }
+        if let Some(text) = self.top_level.text {
+            return Err(ParseError::TextAtTopLevel(
+                recorder.top_level_text(Node::new(text)),
+            ));
+        }
+        match (self.top_level.elements, self.top_level.second_element) {
+            (0, _) => Err(ParseError::NoElementAtTopLevel(xml.len())),
+            (_, Some(second)) => Err(ParseError::MultipleElementsAtTopLevel(
+                recorder.second_top_level_element(Node::new(second)),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// The parse did not fail: the document node, with its `xml:id` map in
+    /// `xot`.
+    fn complete(mut self, xot: &mut Xot) -> Node {
+        let document = self.tree;
+        xot.id_nodes_map.insert(document, self.id_nodes);
+        self.sink.complete(xot, document);
+        Node::new(document)
+    }
+
     /// The parse failed: the sink abandons what it made.
     fn abandon(mut self, xot: &mut Xot) {
         self.sink.abandon(xot);
+    }
+}
+
+/// The nodes under the document node that the checks of a document look at,
+/// as a parse makes them.
+#[derive(Default)]
+struct TopLevel {
+    /// The number of elements.
+    elements: usize,
+    /// The second element.
+    second_element: Option<NodeId>,
+    /// The first text node.
+    text: Option<NodeId>,
+}
+
+impl TopLevel {
+    #[inline]
+    fn element(&mut self, node_id: NodeId) {
+        self.elements += 1;
+        if self.elements == 2 {
+            self.second_element = Some(node_id);
+        }
     }
 }
 
@@ -674,6 +762,8 @@ struct OpenElement<'a> {
     /// The prefix and the local name in its start tag.
     prefix: &'a str,
     name: &'a str,
+    /// Its name.
+    name_id: NameId,
     /// Where its namespace declarations start in `NameIdBuilder::bindings`.
     declarations_start: usize,
 }
@@ -784,13 +874,15 @@ impl<'a> NameIdBuilder<'a> {
         &self.bindings[self.declarations_start..]
     }
 
-    /// The element of the start tag that is being read is opened under
-    /// `parent`; its declarations are in scope until it is closed.
-    fn open(&mut self, parent: NodeId, prefix: &'a str, name: &'a str) {
+    /// The element of the start tag that is being read, named `name_id`, is
+    /// opened under `parent`; its declarations are in scope until it is
+    /// closed.
+    fn open(&mut self, parent: NodeId, prefix: &'a str, name: &'a str, name_id: NameId) {
         self.open_elements.push(OpenElement {
             parent,
             prefix,
             name,
+            name_id,
             declarations_start: self.declarations_start,
         });
     }
@@ -1331,77 +1423,29 @@ impl Xot {
         recorder: &mut R,
     ) -> Result<Node, ParseError> {
         let tokenizer = Tokenizer::from(xml);
-        self.parse_tokens_as_document(tokenizer, xml, recorder)
+        self.parse_tokens_as_document(tokenizer, xml, recorder, MutableSink::default())
     }
 
-    /// Parse the tokens of `xml` into a document node, and check that it is
-    /// a well-formed document: no element is left open, and the document node
-    /// has one element and no text.
+    /// Parse the tokens of `xml` into a document node in `sink`, and check
+    /// that it is a well-formed document: no element is left open, and the
+    /// document node has one element and no text.
     ///
     /// The tokenizer of a document does not give text, or a second element,
     /// outside the document element, but stops with an error first; the
     /// tests also give this function the tokens of a fragment.
-    fn parse_tokens_as_document<R: SpanRecorder>(
+    fn parse_tokens_as_document<R: SpanRecorder, S: TreeSink>(
         &mut self,
         tokenizer: Tokenizer<'_>,
         xml: &str,
         recorder: &mut R,
+        sink: S,
     ) -> Result<Node, ParseError> {
-        let fresh = self.arena.fresh_start();
-        let builder = self._parse(tokenizer, xml, recorder, MutableSink)?;
-        if let Err(error) = self.check_document(&builder, xml, recorder) {
+        let builder = self._parse(tokenizer, xml, recorder, sink)?;
+        if let Err(error) = builder.check_document(xml, recorder) {
             builder.abandon(self);
             return Err(error);
         }
-        let document_node = Node::new(builder.tree);
-        self.id_nodes_map
-            .insert(document_node.get(), builder.id_nodes);
-        self.keep_parsed(fresh, document_node);
-        Ok(document_node)
-    }
-
-    /// Check that the parse of `builder` made a well-formed document: no
-    /// element is left open, and the document node has one element and no
-    /// text.
-    fn check_document<R: SpanRecorder, S: TreeSink>(
-        &self,
-        builder: &DocumentBuilder<'_, S>,
-        xml: &str,
-        recorder: &mut R,
-    ) -> Result<(), ParseError> {
-        // we expect both a document as the current node (everything else being
-        // closed) *and* the content of this node containing a single element
-        // if not, we have a problem. We want to produce a parse error for
-        // this, as this is the parser.
-        if !builder.is_current_node_document() {
-            let current_node = Node::new(builder.current_node_id);
-
-            // the top level node's span is the problem
-            return Err(ParseError::UnclosedTag(
-                recorder.unclosed_element(current_node),
-            ));
-        }
-        let document_node = Node::new(builder.tree);
-        let mut element_nodes = Vec::new();
-
-        for child in self.children(document_node) {
-            match self.value(child) {
-                Value::Element(_) => element_nodes.push(child),
-                Value::Text(_) => {
-                    return Err(ParseError::TextAtTopLevel(recorder.top_level_text(child)));
-                }
-                _ => {}
-            }
-        }
-        if element_nodes.is_empty() {
-            return Err(ParseError::NoElementAtTopLevel(xml.len()));
-        }
-        if element_nodes.len() > 1 {
-            return Err(ParseError::MultipleElementsAtTopLevel(
-                recorder.second_top_level_element(element_nodes[1]),
-            ));
-        }
-        Ok(())
+        Ok(builder.complete(self))
     }
 
     /// Parse a string containing an XML fragment into a document node.
@@ -1424,19 +1468,20 @@ impl Xot {
         xml: &str,
     ) -> Result<(Node, SpanInfo), ParseError> {
         let mut span_info = SpanInfo::new();
-        let document_node = self.parse_fragment_document(xml, &mut span_info)?;
+        let document_node =
+            self.parse_fragment_document(xml, &mut span_info, MutableSink::default())?;
         Ok((document_node, span_info))
     }
 
-    /// Parse `xml` as a fragment, with the spans in `recorder`.
-    fn parse_fragment_document<R: SpanRecorder>(
+    /// Parse `xml` as a fragment into `sink`, with the spans in `recorder`.
+    fn parse_fragment_document<R: SpanRecorder, S: TreeSink>(
         &mut self,
         xml: &str,
         recorder: &mut R,
+        sink: S,
     ) -> Result<Node, ParseError> {
         let tokenizer = Tokenizer::from_fragment(xml, 0..xml.len());
-        let fresh = self.arena.fresh_start();
-        let builder = self._parse(tokenizer, xml, recorder, MutableSink)?;
+        let builder = self._parse(tokenizer, xml, recorder, sink)?;
         if !builder.is_current_node_document() {
             let current_node = Node::new(builder.current_node_id);
             // the top level node's span is the problem
@@ -1444,15 +1489,12 @@ impl Xot {
             builder.abandon(self);
             return Err(error);
         }
-        let document_node = Node::new(builder.tree);
-        self.id_nodes_map
-            .insert(document_node.get(), builder.id_nodes);
-        self.keep_parsed(fresh, document_node);
-        Ok(document_node)
+        Ok(builder.complete(self))
     }
 
     /// Keep the tree of `document_node`, which a parse just made and checked,
-    /// if `fresh`, which `Arena::fresh_start` gave before the parse, says
+    /// if `fresh`, which `Arena::fresh_start` gave right before the parse
+    /// made the document node, says
     /// that its nodes took new slots one after another, right after the kept
     /// trees (see [`Xot::parsed_tree`]).
     #[inline]
@@ -1681,7 +1723,7 @@ impl Xot {
     /// To know where the nodes are in `xml`, use
     /// [`Xot::parse_fragment_with_span_info`].
     pub fn parse_fragment(&mut self, xml: &str) -> Result<Node, ParseError> {
-        self.parse_fragment_document(xml, &mut ErrorSpans::default())
+        self.parse_fragment_document(xml, &mut ErrorSpans::default(), MutableSink::default())
     }
 
     /// Parse bytes containing XML into a node.
