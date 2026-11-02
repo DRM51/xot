@@ -222,6 +222,64 @@ impl NodeView<'_> {
     }
 }
 
+/// A read of a processing instruction node, by value: its target and its
+/// data.
+///
+/// Obtained with
+/// [`Xot::processing_instruction`](crate::Xot::processing_instruction). It
+/// reads like the stored [`ProcessingInstruction`], and the data borrows from
+/// the tree. To change the node, use
+/// [`Xot::processing_instruction_mut`](crate::Xot::processing_instruction_mut).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProcessingInstructionView<'a> {
+    target: NameId,
+    data: Option<&'a str>,
+}
+
+impl<'a> ProcessingInstructionView<'a> {
+    pub(crate) fn new(target: NameId, data: Option<&'a str>) -> Self {
+        Self { target, data }
+    }
+
+    /// Get processing instruction target.
+    pub fn target(&self) -> NameId {
+        self.target
+    }
+
+    /// Get processing instruction data.
+    pub fn data(&self) -> Option<&'a str> {
+        self.data
+    }
+}
+
+/// A read of an attribute node, by value: its name and its value.
+///
+/// Obtained with [`Xot::attribute_node`](crate::Xot::attribute_node). It
+/// reads like the stored [`Attribute`], and the value borrows from the tree.
+/// To change the node, use
+/// [`Xot::attribute_node_mut`](crate::Xot::attribute_node_mut).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AttributeView<'a> {
+    name_id: NameId,
+    value: &'a str,
+}
+
+impl<'a> AttributeView<'a> {
+    pub(crate) fn new(name_id: NameId, value: &'a str) -> Self {
+        Self { name_id, value }
+    }
+
+    /// Get name
+    pub fn name(&self) -> NameId {
+        self.name_id
+    }
+
+    /// Get value
+    pub fn value(&self) -> &'a str {
+        self.value
+    }
+}
+
 /// A map of PrefixId to NamespaceId for namespace tracking.
 ///
 /// This is a real hash map, thus providing constant time access and does not

@@ -37,9 +37,10 @@
     `set_name`. `Xot::set_element_name` is unchanged; use it, or
     `Xot::element_mut`, where code renamed an element through
     `Xot::value_mut`.
-  - `Xot::processing_instruction(node)` returns `Option<(NameId,
-    Option<&str>)>`, the target and the data, instead of
-    `Option<&ProcessingInstruction>`.
+  - `Xot::processing_instruction(node)` returns
+    `Option<ProcessingInstructionView<'_>>` instead of
+    `Option<&ProcessingInstruction>`. Its `target()` and `data()` read as
+    before; `data()` borrows from the tree.
   - `Xot::namespace_node(node)` returns `Option<Namespace>` instead of
     `Option<&Namespace>`. `Namespace` is now `Copy`, and
     `Namespace::set_namespace` is removed for the same reason as
@@ -47,8 +48,9 @@
     `Option<MutableNamespace<'_>>` instead of `Option<&mut Namespace>`: its
     `prefix`, `namespace` and `set_namespace` read and change the namespace
     node in the tree.
-  - `Xot::attribute_node(node)` returns `Option<(NameId, &str)>`, the name
-    and the value, instead of `Option<&Attribute>`.
+  - `Xot::attribute_node(node)` returns `Option<AttributeView<'_>>` instead
+    of `Option<&Attribute>`. Its `name()` and `value()` read as before;
+    `value()` borrows from the tree.
   - The maps of `Xot::attributes` (`Attributes`) and `Xot::namespaces`
     (`Namespaces`) read by value: `get`, `iter` and `values` give `&str` for
     an attribute value (not `&String`) and `NamespaceId` (not
@@ -149,7 +151,9 @@
   `NodeView::to_value` an owned `Value` with what it holds.
 
 - `MutableElement` and `MutableNamespace`, what `Xot::element_mut` and
-  `Xot::namespace_node_mut` now return (see the breaking changes).
+  `Xot::namespace_node_mut` now return, and `ProcessingInstructionView` and
+  `AttributeView`, what `Xot::processing_instruction` and
+  `Xot::attribute_node` now return (see the breaking changes).
 
 - `output::xml::Writer` writes XML incrementally, a start tag, a text, a
   comment, a processing instruction or an end tag at a time, as a caller

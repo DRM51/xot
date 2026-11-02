@@ -1,7 +1,7 @@
 use crate::access::NodeEdge;
 use crate::xmlvalue::{
-    Attribute, Comment, Element, MutableElement, MutableNamespace, Namespace, NodeView,
-    ProcessingInstruction, Text, Value, ValueType,
+    Attribute, AttributeView, Comment, Element, MutableElement, MutableNamespace, Namespace,
+    NodeView, ProcessingInstruction, ProcessingInstructionView, Text, Value, ValueType,
 };
 use crate::xotdata::{Node, Xot};
 use crate::NameId;
@@ -439,7 +439,7 @@ impl Xot {
     }
 
     /// If this node's value is a processing instruction, return its target
-    /// and its data.
+    /// and its data, as a [`ProcessingInstructionView`].
     ///
     /// ```rust
     /// use xot::Xot;
@@ -449,16 +449,18 @@ impl Xot {
     /// let doc_el = xot.document_element(root).unwrap();
     /// let pi_node = xot.first_child(doc_el).unwrap();
     ///
-    /// let (target, data) = xot.processing_instruction(pi_node).unwrap();
-    /// assert_eq!(xot.local_name_str(target), "pi");
-    /// assert_eq!(data, Some("data"));
+    /// let pi = xot.processing_instruction(pi_node).unwrap();
+    /// assert_eq!(xot.local_name_str(pi.target()), "pi");
+    /// assert_eq!(pi.data(), Some("data"));
     /// assert!(xot.processing_instruction(doc_el).is_none());
     /// # Ok::<(), xot::Error>(())
     /// ```
     #[inline]
-    pub fn processing_instruction(&self, node: Node) -> Option<(NameId, Option<&str>)> {
+    pub fn processing_instruction(&self, node: Node) -> Option<ProcessingInstructionView<'_>> {
         match self.value(node) {
-            Value::ProcessingInstruction(pi) => Some((pi.target(), pi.data())),
+            Value::ProcessingInstruction(pi) => {
+                Some(ProcessingInstructionView::new(pi.target(), pi.data()))
+            }
             _ => None,
         }
     }
@@ -500,7 +502,7 @@ impl Xot {
     }
 
     /// If this node's value is an attribute node, return its name and its
-    /// value.
+    /// value, as an [`AttributeView`].
     ///
     /// ```rust
     /// use xot::Xot;
@@ -511,14 +513,18 @@ impl Xot {
     /// let a = xot.name("a").unwrap();
     /// let attribute_node = xot.attributes(doc_el).get_node(a).unwrap();
     ///
-    /// assert_eq!(xot.attribute_node(attribute_node), Some((a, "A")));
+    /// let attribute = xot.attribute_node(attribute_node).unwrap();
+    /// assert_eq!(attribute.name(), a);
+    /// assert_eq!(attribute.value(), "A");
     /// assert!(xot.attribute_node(doc_el).is_none());
     /// # Ok::<(), xot::Error>(())
     /// ```
     #[inline]
-    pub fn attribute_node(&self, node: Node) -> Option<(NameId, &str)> {
+    pub fn attribute_node(&self, node: Node) -> Option<AttributeView<'_>> {
         match self.value(node) {
-            Value::Attribute(attribute) => Some((attribute.name(), attribute.value())),
+            Value::Attribute(attribute) => {
+                Some(AttributeView::new(attribute.name(), attribute.value()))
+            }
             _ => None,
         }
     }

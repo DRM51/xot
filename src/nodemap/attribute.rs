@@ -120,6 +120,27 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
 ///
 /// Obtained using [`Xot::attributes`].
 ///
+/// The values are read by value, as string slices that borrow from the tree:
+///
+/// ```rust
+/// use xot::{NameId, Xot};
+///
+/// let mut xot = Xot::new();
+/// let root = xot.parse(r#"<doc a="A" b="B"/>"#)?;
+/// let doc_el = xot.document_element(root).unwrap();
+/// let a = xot.name("a").unwrap();
+/// let b = xot.name("b").unwrap();
+///
+/// let attributes = xot.attributes(doc_el);
+/// let value: Option<&str> = attributes.get(a);
+/// assert_eq!(value, Some("A"));
+/// let pairs: Vec<(NameId, &str)> = attributes.iter().collect();
+/// assert_eq!(pairs, [(a, "A"), (b, "B")]);
+/// let values: Vec<&str> = attributes.values().collect();
+/// assert_eq!(values, ["A", "B"]);
+/// # Ok::<(), xot::Error>(())
+/// ```
+///
 /// See [`NodeMap`] for details.
 pub type Attributes<'a> = NodeMap<'a, NameId, String, AttributeAdapter>;
 

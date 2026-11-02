@@ -463,7 +463,7 @@ fn test_parse_processing_instruction_line_ends() {
     let doc_el = xot.document_element(doc).unwrap();
     let pi = xot.first_child(doc_el).unwrap();
     assert_eq!(
-        xot.processing_instruction(pi).unwrap().1,
+        xot.processing_instruction(pi).unwrap().data(),
         Some("x\u{A}y\u{A}z")
     );
 }
@@ -1069,7 +1069,7 @@ fn test_parse_processing_instruction_targets_starting_with_xml() {
     let targets: Vec<_> = xot
         .children(doc)
         .filter_map(|node| xot.processing_instruction(node))
-        .map(|(target, _)| xot.local_name_str(target).to_string())
+        .map(|pi| xot.local_name_str(pi.target()).to_string())
         .collect();
     assert_eq!(targets, ["xml-stylesheet", "xmlfoo"]);
 }

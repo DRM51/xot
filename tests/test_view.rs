@@ -1,7 +1,9 @@
 // Reads of node values by value: `Xot::view` and the accessors that return
 // values or string slices.
 
-use xot::{Element, Namespace, NodeView, Value, ValueType, Xot};
+use xot::{
+    AttributeView, Element, Namespace, NodeView, ProcessingInstructionView, Value, ValueType, Xot,
+};
 
 const XML: &str = r#"<!--before--><?pi data?><doc xmlns="urn:example:d" xmlns:p="urn:example:p" a="A" p:b="B">text<child/><!--c--><?empty?></doc>"#;
 
@@ -297,19 +299,30 @@ fn test_processing_instruction_accessor() {
     let one = xot.first_child(doc_el).unwrap();
     let two = xot.next_sibling(one).unwrap();
 
-    let (target, data) = xot.processing_instruction(one).unwrap();
-    assert_eq!(xot.local_name_str(target), "one");
+    let pi: ProcessingInstructionView = xot.processing_instruction(one).unwrap();
+    assert_eq!(xot.local_name_str(pi.target()), "one");
+    assert_eq!(pi.data(), Some("data here"));
+    // the same as the view of the node
+    assert_eq!(
+        xot.view(one),
+        NodeView::ProcessingInstruction(pi.target(), Some("data here"))
+    );
+    // the data borrows from the tree, not from the view
+    let data: Option<&str> = xot.processing_instruction(one).unwrap().data();
     assert_eq!(data, Some("data here"));
-    let (target, data) = xot.processing_instruction(two).unwrap();
-    assert_eq!(xot.local_name_str(target), "two");
-    assert_eq!(data, None);
+    let pi = xot.processing_instruction(two).unwrap();
+    assert_eq!(xot.local_name_str(pi.target()), "two");
+    assert_eq!(pi.data(), None);
     assert!(xot.processing_instruction(doc_el).is_none());
 
     // changed through the mutable accessor
     xot.processing_instruction_mut(two)
         .unwrap()
         .set_data(Some("changed"));
-    assert_eq!(xot.processing_instruction(two).unwrap().1, Some("changed"));
+    assert_eq!(
+        xot.processing_instruction(two).unwrap().data(),
+        Some("changed")
+    );
 }
 
 #[test]
@@ -355,7 +368,13 @@ fn test_attribute_values_by_value() {
 
     // the attribute node accessor
     let node = attributes.get_node(b).unwrap();
-    assert_eq!(xot.attribute_node(node), Some((b, "x < y")));
+    let attribute: AttributeView = xot.attribute_node(node).unwrap();
+    assert_eq!(attribute.name(), b);
+    assert_eq!(attribute.value(), "x < y");
+    // the value borrows from the tree, not from the view
+    let value: &str = xot.attribute_node(node).unwrap().value();
+    assert_eq!(value, "x < y");
+    assert_eq!(xot.view(node), NodeView::Attribute(b, "x < y"));
     assert_eq!(xot.attribute_node(doc_el), None);
 }
 

@@ -38,8 +38,8 @@ fn write_by_walk(xot: &Xot, parameters: &Parameters, root: Node) -> Result<Vec<u
                 }
                 ValueType::Comment => writer.comment(xot, xot.comment_str(node).unwrap(), node)?,
                 ValueType::ProcessingInstruction => {
-                    let (target, data) = xot.processing_instruction(node).unwrap();
-                    writer.processing_instruction(xot, target, data, node)?;
+                    let pi = xot.processing_instruction(node).unwrap();
+                    writer.processing_instruction(xot, pi.target(), pi.data(), node)?;
                 }
                 _ => {}
             },

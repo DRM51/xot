@@ -113,6 +113,25 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
 ///
 /// Obtained using [`Xot::namespaces`].
 ///
+/// The values are read by value, as namespace ids:
+///
+/// ```rust
+/// use xot::{NamespaceId, PrefixId, Xot};
+///
+/// let mut xot = Xot::new();
+/// let root = xot.parse(r#"<doc xmlns:p="urn:example:p"/>"#)?;
+/// let doc_el = xot.document_element(root).unwrap();
+/// let p = xot.prefix("p").unwrap();
+/// let urn_p = xot.namespace("urn:example:p").unwrap();
+///
+/// let namespaces = xot.namespaces(doc_el);
+/// let namespace: Option<NamespaceId> = namespaces.get(p);
+/// assert_eq!(namespace, Some(urn_p));
+/// let pairs: Vec<(PrefixId, NamespaceId)> = namespaces.iter().collect();
+/// assert_eq!(pairs, [(p, urn_p)]);
+/// # Ok::<(), xot::Error>(())
+/// ```
+///
 /// See [`NodeMap`] for details.
 pub type Namespaces<'a> = NodeMap<'a, PrefixId, NamespaceId, NamespaceAdapter>;
 

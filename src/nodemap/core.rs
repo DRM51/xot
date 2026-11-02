@@ -133,7 +133,9 @@ where
     }
 
     /// An iterator visiting all key-value pairs in insertion order. The iterator element type is
-    /// `(K, A::Read<'a>)`: the key, and the value read by value.
+    /// `(K, A::Read<'a>)`: the key, and the value read by value, which is
+    /// `(NameId, &str)` for [`Attributes`](crate::Attributes) and
+    /// `(PrefixId, NamespaceId)` for [`Namespaces`](crate::Namespaces).
     pub fn iter(&self) -> impl Iterator<Item = (K, A::Read<'a>)> + '_ {
         self.iter_value()
             .map(|value| (A::key(value), A::read(value)))
@@ -152,7 +154,9 @@ where
     }
 
     /// An iterator visiting all values in insertion order, read by value. The
-    /// iterator element type is `A::Read<'a>`.
+    /// iterator element type is `A::Read<'a>`: `&str` for
+    /// [`Attributes`](crate::Attributes) and `NamespaceId` for
+    /// [`Namespaces`](crate::Namespaces).
     pub fn values(&self) -> impl Iterator<Item = A::Read<'a>> + '_ {
         self.iter_value().map(move |value| A::read(value))
     }
