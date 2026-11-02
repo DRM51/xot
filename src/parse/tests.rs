@@ -9,12 +9,21 @@
 //! `MultipleElementsAtTopLevel` come up here only through the checks of a
 //! document after the tokens of a fragment
 //! (`Mode::FragmentTokensAsDocument`).
-use std::collections::BTreeMap;
+//!
+//! The same texts check the seam between the builder and its sink
+//! (`TreeSink`): a sink that keeps a log of what it gets, in the order it gets it,
+//! against the tree that the sink of `Xot`'s trees makes.
+use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use xmlparser::Tokenizer;
 
-use super::{ErrorSpans, SpanRecorder};
-use crate::{Node, ParseError, Span, SpanInfo, Xot};
+use super::{ErrorSpans, MutableSink, SpanRecorder, TreeSink};
+use crate::arena::NodeId;
+use crate::id::{NameId, PrefixId};
+use crate::{NamespaceId, Node, NodeView, ParseError, Span, SpanInfo, Xot};
 
 /// How a text is parsed.
 #[derive(Clone, Copy, Debug)]
@@ -276,4 +285,377 @@ fn error_spans_are_those_of_span_info() {
             tally
         );
     }
+}
+
+// The seam between the builder and the sink: a sink that keeps a log of what
+// it gets, and hands it on to the sink of `Xot`'s trees.
+
+/// What a sink got.
+#[derive(Debug, Clone, PartialEq)]
+enum Event {
+    Document(NodeId),
+    Element(NodeId, NodeId, NameId),
+    Namespace(NodeId, PrefixId, NamespaceId),
+    Attribute(NodeId, NameId, String),
+    Text(NodeId, NodeId, String),
+    AppendText(NodeId, String),
+    Comment(NodeId, NodeId, String),
+    ProcessingInstruction(NodeId, NodeId, NameId, Option<String>),
+    Close(NodeId),
+    Abandon,
+}
+
+/// A sink that keeps each call in `events`, and passes it on to
+/// `MutableSink`, so that the parse makes its tree as before.
+struct RecordingSink {
+    events: Rc<RefCell<Vec<Event>>>,
+}
+
+impl RecordingSink {
+    fn record(&self, event: Event) {
+        self.events.borrow_mut().push(event);
+    }
+}
+
+impl TreeSink for RecordingSink {
+    fn document(&mut self, xot: &mut Xot) -> NodeId {
+        let node = MutableSink.document(xot);
+        self.record(Event::Document(node));
+        node
+    }
+
+    fn element(&mut self, xot: &mut Xot, parent: NodeId, name_id: NameId) -> NodeId {
+        let node = MutableSink.element(xot, parent, name_id);
+        self.record(Event::Element(parent, node, name_id));
+        node
+    }
+
+    fn namespace(
+        &mut self,
+        xot: &mut Xot,
+        element: NodeId,
+        prefix_id: PrefixId,
+        namespace_id: NamespaceId,
+    ) {
+        MutableSink.namespace(xot, element, prefix_id, namespace_id);
+        self.record(Event::Namespace(element, prefix_id, namespace_id));
+    }
+
+    fn attribute(&mut self, xot: &mut Xot, element: NodeId, name_id: NameId, value: Cow<'_, str>) {
+        self.record(Event::Attribute(element, name_id, value.to_string()));
+        MutableSink.attribute(xot, element, name_id, value);
+    }
+
+    fn text(&mut self, xot: &mut Xot, parent: NodeId, content: Cow<'_, str>) -> NodeId {
+        let text = content.to_string();
+        let node = MutableSink.text(xot, parent, content);
+        self.record(Event::Text(parent, node, text));
+        node
+    }
+
+    fn append_text(&mut self, xot: &mut Xot, text: NodeId, content: &str) {
+        MutableSink.append_text(xot, text, content);
+        self.record(Event::AppendText(text, content.to_string()));
+    }
+
+    fn comment(&mut self, xot: &mut Xot, parent: NodeId, content: Cow<'_, str>) -> NodeId {
+        let text = content.to_string();
+        let node = MutableSink.comment(xot, parent, content);
+        self.record(Event::Comment(parent, node, text));
+        node
+    }
+
+    fn processing_instruction(
+        &mut self,
+        xot: &mut Xot,
+        parent: NodeId,
+        target: NameId,
+        content: Option<Cow<'_, str>>,
+    ) -> NodeId {
+        let text = content.as_ref().map(|c| c.to_string());
+        let node = MutableSink.processing_instruction(xot, parent, target, content);
+        self.record(Event::ProcessingInstruction(parent, node, target, text));
+        node
+    }
+
+    fn close_element(&mut self, xot: &mut Xot, element: NodeId) {
+        MutableSink.close_element(xot, element);
+        self.record(Event::Close(element));
+    }
+
+    fn element_name(&self, xot: &Xot, node: NodeId) -> Option<NameId> {
+        MutableSink.element_name(xot, node)
+    }
+
+    fn abandon(&mut self, xot: &mut Xot) {
+        MutableSink.abandon(xot);
+        self.record(Event::Abandon);
+    }
+}
+
+/// A tree as text: each node as `NodeView` shows it, then its children, all
+/// of them, namespace and attribute nodes first, as the arena has them.
+fn dump(xot: &Xot, node: NodeId, depth: usize, out: &mut String) {
+    out.push_str(&format!(
+        "{}{:?}\n",
+        "  ".repeat(depth),
+        xot.view(Node::new(node))
+    ));
+    for child in xot.arena.children(node) {
+        dump(xot, child, depth + 1, out);
+    }
+}
+
+/// The tree that `events` describe, as `dump` shows a tree; and a check
+/// that they come in the order a sink is promised.
+fn replay(events: &[Event]) -> String {
+    let mut views: HashMap<NodeId, (Event, Vec<NodeId>, String)> = HashMap::new();
+    let mut open: Vec<NodeId> = Vec::new();
+    // the node that came last, and whether attributes may still come for it
+    let mut last: Option<NodeId> = None;
+    let mut in_start_tag: Option<(NodeId, bool)> = None;
+    let add = |views: &mut HashMap<NodeId, (Event, Vec<NodeId>, String)>,
+               parent: Option<NodeId>,
+               node: NodeId,
+               event: &Event| {
+        assert!(!views.contains_key(&node), "{:?} came twice", node);
+        if let Some(parent) = parent {
+            views
+                .get_mut(&parent)
+                .expect("the parent came first")
+                .1
+                .push(node);
+        }
+        views.insert(node, (event.clone(), Vec::new(), String::new()));
+    };
+    let Some((Event::Document(document), later)) = events.split_first() else {
+        panic!("the document node comes first: {:?}", events);
+    };
+    add(&mut views, None, *document, &events[0]);
+    open.push(*document);
+    for event in later {
+        let current = *open
+            .last()
+            .expect("an event after the document node was closed");
+        match event {
+            Event::Element(parent, node, _) => {
+                assert_eq!(*parent, current, "an element in the current node");
+                add(&mut views, Some(*parent), *node, event);
+                open.push(*node);
+                in_start_tag = Some((*node, true));
+                last = Some(*node);
+            }
+            Event::Namespace(element, _, _) => {
+                assert_eq!(
+                    in_start_tag,
+                    Some((*element, true)),
+                    "a namespace node right after its element"
+                );
+                let node = NodeId::first_in(
+                    std::num::NonZeroU32::new(u32::MAX - views.len() as u32).unwrap(),
+                );
+                add(&mut views, Some(*element), node, event);
+                last = None;
+            }
+            Event::Attribute(element, _, _) => {
+                assert!(
+                    matches!(in_start_tag, Some((e, _)) if e == *element),
+                    "an attribute node in its start tag"
+                );
+                in_start_tag = Some((*element, false));
+                let node = NodeId::first_in(
+                    std::num::NonZeroU32::new(u32::MAX - views.len() as u32).unwrap(),
+                );
+                add(&mut views, Some(*element), node, event);
+                last = None;
+            }
+            Event::Text(parent, node, _) => {
+                assert_eq!(*parent, current, "text in the current node");
+                in_start_tag = None;
+                add(&mut views, Some(*parent), *node, event);
+                last = Some(*node);
+            }
+            Event::AppendText(node, content) => {
+                assert_eq!(last, Some(*node), "more text for the node that came last");
+                let entry = views.get_mut(node).unwrap();
+                assert!(
+                    matches!(entry.0, Event::Text(..)),
+                    "more text for a text node"
+                );
+                entry.2.push_str(content);
+            }
+            Event::Comment(parent, node, _) | Event::ProcessingInstruction(parent, node, _, _) => {
+                assert_eq!(*parent, current, "a node in the current node");
+                in_start_tag = None;
+                add(&mut views, Some(*parent), *node, event);
+                last = Some(*node);
+            }
+            Event::Close(element) => {
+                assert_eq!(*element, current, "the innermost open element closes");
+                assert_ne!(*element, *document, "the document node is not closed");
+                open.pop();
+                in_start_tag = None;
+                last = Some(*element);
+            }
+            Event::Document(_) => panic!("a second document node"),
+            Event::Abandon => panic!("abandon in a parse that did not fail"),
+        }
+    }
+    assert_eq!(open, [*document], "every element is closed");
+    fn show(
+        views: &HashMap<NodeId, (Event, Vec<NodeId>, String)>,
+        node: NodeId,
+        depth: usize,
+        out: &mut String,
+    ) {
+        let (event, children, more) = &views[&node];
+        let text = match event {
+            Event::Text(_, _, text) => format!("{}{}", text, more),
+            _ => String::new(),
+        };
+        let view = match event {
+            Event::Document(_) => NodeView::Document,
+            Event::Element(_, _, name) => NodeView::Element(*name),
+            Event::Namespace(_, prefix, namespace) => NodeView::Namespace(*prefix, *namespace),
+            Event::Attribute(_, name, value) => NodeView::Attribute(*name, value),
+            Event::Text(..) => NodeView::Text(&text),
+            Event::Comment(_, _, text) => NodeView::Comment(text),
+            Event::ProcessingInstruction(_, _, target, content) => {
+                NodeView::ProcessingInstruction(*target, content.as_deref())
+            }
+            _ => unreachable!(),
+        };
+        let line = format!("{:?}", view);
+        out.push_str(&format!("{}{}\n", "  ".repeat(depth), line));
+        for &child in children {
+            show(views, child, depth + 1, out);
+        }
+    }
+    let mut out = String::new();
+    show(&views, *document, 0, &mut out);
+    out
+}
+
+/// Parse `xml` in `mode` through a recording sink, check what the sink got
+/// against the tree, and check that the result is that of the parse
+/// through the sink of `Xot`'s trees.
+fn check_sink(xml: &str, mode: Mode) -> bool {
+    let expected = parse_with(xml, mode, &mut ErrorSpans::default()).map(|_| ());
+    let mut xot = Xot::new();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sink = RecordingSink {
+        events: events.clone(),
+    };
+    let tokenizer = match mode {
+        Mode::Document => Tokenizer::from(xml),
+        _ => Tokenizer::from_fragment(xml, 0..xml.len()),
+    };
+    let mut spans = ErrorSpans::default();
+    let result = xot
+        ._parse(tokenizer, xml, &mut spans, sink)
+        .and_then(|builder| {
+            let checked = match mode {
+                Mode::Fragment if builder.is_current_node_document() => Ok(()),
+                Mode::Fragment => Err(ParseError::UnclosedTag(
+                    spans.unclosed_element(Node::new(builder.current_node_id)),
+                )),
+                _ => xot.check_document(&builder, xml, &mut spans),
+            };
+            match checked {
+                Ok(()) => Ok(builder.tree),
+                Err(error) => {
+                    builder.abandon(&mut xot);
+                    Err(error)
+                }
+            }
+        });
+    assert_eq!(
+        format!("{:?}", result.as_ref().map(|_| ())),
+        format!("{:?}", expected),
+        "{:?} {:?}",
+        mode,
+        xml
+    );
+    let events = events.borrow();
+    match result {
+        Ok(document) => {
+            let mut tree = String::new();
+            dump(&xot, document, 0, &mut tree);
+            assert_eq!(replay(&events), tree, "{:?} {:?}", mode, xml);
+            true
+        }
+        Err(_) => {
+            assert_eq!(events.last(), Some(&Event::Abandon), "{:?} {:?}", mode, xml);
+            assert_eq!(
+                events.iter().filter(|e| **e == Event::Abandon).count(),
+                1,
+                "{:?} {:?}",
+                mode,
+                xml
+            );
+            false
+        }
+    }
+}
+
+/// Documents with what the builder does on its side of the sink: namespaces,
+/// attributes in namespaces, `xml:id`, references, CDATA sections next to
+/// text, line ends, comments, processing instructions and a document type
+/// declaration, and documents that fail at each of the builder's checks.
+const SINK_SAMPLES: [&str; 24] = [
+    "<a/>",
+    "<?xml version=\"1.0\"?>\n<!-- c --><?p d?><a b=\"1\" c='2'/><!--e-->",
+    "<a xmlns=\"urn:example:a\" xmlns:p=\"urn:example:p\" p:b=\"&lt;&#x41;\"><p:c xmlns:p=\"urn:example:q\"/><d xmlns=\"\"/></a>",
+    "<a>t<![CDATA[c]]>u&amp;v<![CDATA[]]>\r\nw<b/>x\ry<!--z-->1<?p?>2</a>",
+    "<a xml:id=\" i  j \"><b xml:id=\"k\"/></a>",
+    "<a xml:id=\"i\"><b xml:id=\"i\"/></a>",
+    "<a b=\"1\" b=\"2\"/>",
+    "<a xmlns:p=\"urn:example:p\" xmlns:q=\"urn:example:p\" p:b=\"1\" q:b=\"2\"/>",
+    "<a xmlns:p=\"urn:example:p\" xmlns:p=\"urn:example:q\"/>",
+    "<p:a xmlns:p=\"urn:example:p\" xmlns:q=\"urn:example:p\"></q:a>",
+    "<a></b>",
+    "<a><b></a>",
+    "<a>&unknown;</a>",
+    "<a b=\"&#0;\"/>",
+    "<p:a/>",
+    "<a xmlns:xml=\"urn:example:x\"/>",
+    "<!DOCTYPE a [<!ATTLIST a b ID #IMPLIED>]><a b=\" x \"/>",
+    "<!DOCTYPE a [<!ATTLIST a b CDATA #IMPLIED>]><a b=\" x \"/>",
+    "<!DOCTYPE a [<!ENTITY e \"v\">]><a>&e;</a>",
+    "<!DOCTYPE a SYSTEM \"a.dtd\"><a>t</a>",
+    "<?xml version=\"1.1\"?><a/>",
+    "<a/><b/>",
+    "t<a/>",
+    "<a><?xml x?></a>",
+];
+
+#[test]
+fn the_sink_gets_each_node_in_document_order() {
+    let mut texts: Vec<String> = SINK_SAMPLES.iter().map(|s| s.to_string()).collect();
+    let mut rng = Rng::new(2);
+    for _ in 0..2000 {
+        let mut text = String::new();
+        random_content(&mut rng, 3, &mut text);
+        texts.push(text);
+    }
+    for _ in 0..1000 {
+        let len = 4 + rng.below(9);
+        texts.push((0..len).map(|_| PIECES[rng.below(PIECES.len())]).collect());
+    }
+    let (mut parsed, mut failed) = (0, 0);
+    for text in &texts {
+        for mode in MODES {
+            if check_sink(text, mode) {
+                parsed += 1;
+            } else {
+                failed += 1;
+            }
+        }
+    }
+    assert!(
+        parsed >= 1000 && failed >= 1000,
+        "{} parsed, {} failed",
+        parsed,
+        failed
+    );
 }
