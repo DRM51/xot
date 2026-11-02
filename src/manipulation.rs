@@ -755,7 +755,7 @@ impl Xot {
                     if needed.contains_key(&prefix) {
                         // the level from the root, which is the last ancestor
                         let level = ancestors.len() - depth;
-                        declarations.push((level, index, prefix, *ns));
+                        declarations.push((level, index, prefix, ns));
                     }
                 }
             }
@@ -1091,8 +1091,8 @@ impl Xot {
             return false;
         };
         // both are read, so that either panics if it is removed
-        let prev_is_text = self.text(prev_node).is_some();
-        let next_is_text = self.text(next_node).is_some();
+        let prev_is_text = self.text_str(prev_node).is_some();
+        let next_is_text = self.text_str(next_node).is_some();
         if !prev_is_text || !next_is_text {
             return false;
         }

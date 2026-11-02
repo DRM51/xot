@@ -4,6 +4,41 @@
 
 ### Breaking changes
 
+- The value of a node is now read by value: the reads that returned a
+  reference to the stored value are removed or return values, so that the
+  way a document stores its nodes does not show in the API. Code that
+  calls them no longer compiles. `Xot::value_mut`, the `_mut` accessors and
+  the mutable maps (`Xot::attributes_mut`, `Xot::namespaces_mut`) are
+  unchanged. The removed and changed reads, with what replaces them:
+
+  - `Xot::value(node) -> &Value` is removed. Use the new `Xot::view(node) ->
+    NodeView<'_>`: `NodeView::Document`, `Element(NameId)`, `Text(&str)`,
+    `Comment(&str)`, `ProcessingInstruction(NameId, Option<&str>)`,
+    `Attribute(NameId, &str)` and `Namespace(PrefixId, NamespaceId)`. A
+    `match` on `Value::Element(element)` becomes a `match` on
+    `NodeView::Element(name)`.
+  - `Xot::text(node) -> Option<&Text>` is removed. Use `Xot::text_str(node)
+    -> Option<&str>`.
+  - `Xot::comment(node) -> Option<&Comment>` is removed. Use
+    `Xot::comment_str(node) -> Option<&str>`.
+  - `Xot::text_content(node) -> Option<&Text>` is removed. Use
+    `Xot::text_content_str(node) -> Option<&str>`, which also gives
+    `Some("")` for an element without children.
+  - `Xot::element(node)` returns `Option<Element>` instead of
+    `Option<&Element>`. `Element` is `Copy`.
+  - `Xot::processing_instruction(node)` returns `Option<(NameId,
+    Option<&str>)>`, the target and the data, instead of
+    `Option<&ProcessingInstruction>`.
+  - `Xot::namespace_node(node)` returns `Option<Namespace>` instead of
+    `Option<&Namespace>`. `Namespace` is now `Copy`.
+  - `Xot::attribute_node(node)` returns `Option<(NameId, &str)>`, the name
+    and the value, instead of `Option<&Attribute>`.
+  - The maps of `Xot::attributes` (`Attributes`) and `Xot::namespaces`
+    (`Namespaces`) read by value: `get`, `iter` and `values` give `&str` for
+    an attribute value (not `&String`) and `NamespaceId` (not
+    `&NamespaceId`) for a namespace. `.copied()` and `*` on the namespace
+    ids are no longer needed. The mutable maps still give references.
+
 - `ParseError` has new variants `UnsupportedEncoding` and
   `EncodingConflict`. `Xot::parse_bytes` returns `UnsupportedEncoding` when
   the encoding declaration names an encoding that is not known, or when the
@@ -92,6 +127,9 @@
   against it.
 
 ### Features added
+
+- `NodeView` and `Xot::view`: a read of the value of a node by value (see
+  the breaking changes). `NodeView::value_type` gives its `ValueType`.
 
 - `output::xml::Writer` writes XML incrementally, a start tag, a text, a
   comment, a processing instruction or an end tag at a time, as a caller

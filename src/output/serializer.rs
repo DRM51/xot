@@ -55,7 +55,7 @@ mod tests {
         let mut iter = xot.outputs(doc);
 
         let v = iter.next().unwrap().1;
-        assert_eq!(v, Output::StartTagOpen(*doc_el));
+        assert_eq!(v, Output::StartTagOpen(doc_el));
         let v = iter.next().unwrap().1;
         assert_eq!(v, Output::Prefix(xot.xml_prefix(), xot.xml_namespace()));
         let v = iter.next().unwrap().1;
@@ -65,7 +65,7 @@ mod tests {
         let v = iter.next().unwrap().1;
         assert_eq!(v, Output::Text("Text"));
         let v = iter.next().unwrap().1;
-        assert_eq!(v, Output::EndTag(*doc_el));
+        assert_eq!(v, Output::EndTag(doc_el));
         assert!(iter.next().is_none());
     }
 }

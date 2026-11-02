@@ -539,7 +539,7 @@ impl Xot {
                     continue;
                 }
                 seen.insert(key);
-                if *value == namespace {
+                if value == namespace {
                     return Some(key);
                 }
             }
@@ -562,10 +562,10 @@ impl Xot {
     pub fn namespace_for_prefix(&self, node: Node, prefix: PrefixId) -> Option<NamespaceId> {
         for ancestor in self.ancestors(node) {
             if let Some(namespace) = self.namespaces(ancestor).get(prefix) {
-                if *namespace == self.no_namespace() {
+                if namespace == self.no_namespace() {
                     return None;
                 }
-                return Some(*namespace);
+                return Some(namespace);
             }
         }
         for (key, value) in self.base_prefixes() {
@@ -775,10 +775,10 @@ impl Xot {
                         let to_remove = namespaces
                             .iter()
                             .filter_map(|(_, namespace_id)| {
-                                if fullname_serializer.is_namespace_known(*namespace_id)
-                                    && deduplicate_tracker.is_safe_to_remove(*namespace_id)
+                                if fullname_serializer.is_namespace_known(namespace_id)
+                                    && deduplicate_tracker.is_safe_to_remove(namespace_id)
                                 {
-                                    Some(*namespace_id)
+                                    Some(namespace_id)
                                 } else {
                                     None
                                 }
@@ -800,7 +800,7 @@ impl Xot {
             for namespace_id in to_remove {
                 let prefixes_to_remove = namespaces
                     .iter()
-                    .filter(|(_, ns)| **ns == namespace_id)
+                    .filter(|(_, ns)| *ns == namespace_id)
                     .map(|(prefix, _)| prefix);
                 fixup_prefixes.push((node, prefixes_to_remove.collect::<Vec<_>>()));
             }
@@ -888,7 +888,7 @@ impl DeduplicateTracker {
         let namespaces = xot.namespaces(node);
         let default_namespace = namespaces.get(xot.empty_prefix());
         self.stack.push(DeduplicateTrackerEntry {
-            default_namespace: default_namespace.copied(),
+            default_namespace,
             in_use_by_attribute: false,
         });
         for attribute_name in xot.attributes(node).keys() {
@@ -934,10 +934,10 @@ pub(crate) fn namespace_traverse(
                     continue;
                 }
                 let undeclaration =
-                    xot.empty_prefix() == prefix_id && *namespace_id == xot.no_namespace();
+                    xot.empty_prefix() == prefix_id && namespace_id == xot.no_namespace();
                 seen.push(prefix_id);
                 if !undeclaration {
-                    yield_!((prefix_id, *namespace_id));
+                    yield_!((prefix_id, namespace_id));
                 }
             }
         }

@@ -413,14 +413,10 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
         };
         use Output::*;
         match output {
-            StartTagOpen(element) => self.tokens.start_tag_open(
-                xot,
-                element.name(),
-                xot.namespaces(node)
-                    .iter()
-                    .map(|(prefix, namespace)| (prefix, *namespace)),
-                out,
-            ),
+            StartTagOpen(element) => {
+                self.tokens
+                    .start_tag_open(xot, element.name(), xot.namespaces(node).iter(), out)
+            }
             StartTagClose => Ok(self
                 .tokens
                 .start_tag_close(xot.first_child(node).is_some(), out)),
@@ -492,7 +488,7 @@ impl<'a, N: Normalizer> XmlRenderer<'a, N> {
 /// let mut xot = Xot::new();
 /// let root = xot.parse(r#"<a xmlns="urn:example:a" x="1"/>"#).unwrap();
 /// let a = xot.document_element(root).unwrap();
-/// let declarations: Vec<_> = xot.namespaces(a).iter().map(|(p, n)| (p, *n)).collect();
+/// let declarations: Vec<_> = xot.namespaces(a).iter().collect();
 ///
 /// let mut writer = Writer::new(&xot, &Parameters::default(), Vec::new(), NoopNormalizer).unwrap();
 /// writer.start_element(&xot, a, &declarations, true).unwrap();
@@ -883,7 +879,7 @@ mod tests {
             TokenSerializeParameters::default(),
             crate::output::NoopNormalizer,
         );
-        let element = |node| *xot.element(node).unwrap();
+        let element = |node| xot.element(node).unwrap();
         let mut token = |node, output: Output<'static>| {
             let mut out = String::new();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

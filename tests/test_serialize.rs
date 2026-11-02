@@ -616,7 +616,6 @@ fn test_serialize_namespace_declaration_round_trip() {
                     .iter()
                     // `xml` is bound without a declaration
                     .filter(|(prefix, _)| *prefix != xot.xml_prefix())
-                    .map(|(prefix, ns)| (prefix, *ns))
                     .collect::<Vec<_>>()
             };
             assert_eq!(declarations(&xot, a2), declarations(&xot, a), "{}", xml);
@@ -689,9 +688,9 @@ fn test_serialize_processing_instruction_round_trip() {
                 .parse(&xml)
                 .unwrap_or_else(|err| panic!("{}: {}", xml, err));
             let pi = xot.first_child(doc2).unwrap();
-            let pi = xot.processing_instruction(pi).unwrap();
-            assert_eq!(xot.local_name_str(pi.target()), target, "{}", xml);
-            assert_eq!(pi.data(), data, "{}", xml);
+            let (pi_target, pi_data) = xot.processing_instruction(pi).unwrap();
+            assert_eq!(xot.local_name_str(pi_target), target, "{}", xml);
+            assert_eq!(pi_data, data, "{}", xml);
             serialized.push(xml);
         }
     }

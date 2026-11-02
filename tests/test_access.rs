@@ -174,12 +174,8 @@ fn test_first_child_with_namespace() {
     let mut xot = Xot::new();
     let doc = xot.parse(r#"<doc xmlns:foo="FOO">bar</doc>"#).unwrap();
     let element = xot.document_element(doc).unwrap();
-    let value = xot.value(xot.first_child(element).unwrap());
-    if let xot::Value::Text(text) = value {
-        assert_eq!(text.get(), "bar");
-    } else {
-        unreachable!();
-    }
+    let view = xot.view(xot.first_child(element).unwrap());
+    assert_eq!(view, xot::NodeView::Text("bar"));
 }
 
 #[test]
@@ -187,12 +183,8 @@ fn test_first_child_with_attribute() {
     let mut xot = Xot::new();
     let doc = xot.parse(r#"<doc foo="FOO">bar</doc>"#).unwrap();
     let element = xot.document_element(doc).unwrap();
-    let value = xot.value(xot.first_child(element).unwrap());
-    if let xot::Value::Text(text) = value {
-        assert_eq!(text.get(), "bar");
-    } else {
-        unreachable!();
-    }
+    let view = xot.view(xot.first_child(element).unwrap());
+    assert_eq!(view, xot::NodeView::Text("bar"));
 }
 
 #[test]
@@ -208,12 +200,8 @@ fn test_last_child_with_attribute() {
     let mut xot = Xot::new();
     let doc = xot.parse(r#"<doc foo="FOO">bar</doc>"#).unwrap();
     let element = xot.document_element(doc).unwrap();
-    let value = xot.value(xot.last_child(element).unwrap());
-    if let xot::Value::Text(text) = value {
-        assert_eq!(text.get(), "bar");
-    } else {
-        unreachable!();
-    }
+    let view = xot.view(xot.last_child(element).unwrap());
+    assert_eq!(view, xot::NodeView::Text("bar"));
 }
 
 #[test]

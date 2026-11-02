@@ -43,8 +43,9 @@ pub(crate) enum ValueCategory {
 
 /// An XML value.
 ///
-/// Access it using [`Xot::value`](crate::xotdata::Xot::value) or
-/// mutably using [`Xot::value_mut`](crate::xotdata::Xot::value_mut).
+/// Read it using [`Xot::view`](crate::xotdata::Xot::view), which gives a
+/// [`NodeView`], or change it using
+/// [`Xot::value_mut`](crate::xotdata::Xot::value_mut).
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Value {
     /// Document that holds everything. Note that this not the same as the document
@@ -78,6 +79,26 @@ impl Value {
         }
     }
 
+    /// The value as a [`NodeView`]
+    #[inline]
+    pub(crate) fn view(&self) -> NodeView<'_> {
+        match self {
+            Value::Document => NodeView::Document,
+            Value::Element(element) => NodeView::Element(element.name_id),
+            Value::Text(text) => NodeView::Text(text.get()),
+            Value::Comment(comment) => NodeView::Comment(comment.get()),
+            Value::ProcessingInstruction(pi) => {
+                NodeView::ProcessingInstruction(pi.target, pi.data.as_deref())
+            }
+            Value::Attribute(attribute) => {
+                NodeView::Attribute(attribute.name_id, attribute.value.as_str())
+            }
+            Value::Namespace(namespace) => {
+                NodeView::Namespace(namespace.prefix_id, namespace.namespace_id)
+            }
+        }
+    }
+
     pub(crate) fn value_category(&self) -> ValueCategory {
         match self {
             Value::Document
@@ -99,6 +120,65 @@ impl Value {
                 | Value::ProcessingInstruction(_)
                 | Value::Comment(_)
         )
+    }
+}
+
+/// A read of the value of a node, by value.
+///
+/// Obtained with [`Xot::view`](crate::Xot::view). The variants carry what a
+/// node holds: names and ids by value, text, comment, processing instruction
+/// data and attribute values as string slices that borrow from the tree. A
+/// `NodeView` is `Copy`, so it can be matched, compared and handed on freely.
+///
+/// ```rust
+/// use xot::{NodeView, Xot};
+///
+/// let mut xot = Xot::new();
+/// let root = xot.parse(r#"<doc a="A">Example</doc>"#)?;
+/// let doc_el = xot.document_element(root).unwrap();
+/// let text_node = xot.first_child(doc_el).unwrap();
+///
+/// assert_eq!(xot.view(root), NodeView::Document);
+/// assert_eq!(xot.view(text_node), NodeView::Text("Example"));
+/// match xot.view(doc_el) {
+///     NodeView::Element(name) => assert_eq!(xot.local_name_str(name), "doc"),
+///     _ => unreachable!(),
+/// }
+/// # Ok::<(), xot::Error>(())
+/// ```
+///
+/// To change a node, use [`Xot::value_mut`](crate::Xot::value_mut) or the
+/// specific mutable accessors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NodeView<'a> {
+    /// The document node.
+    Document,
+    /// An element, with its name.
+    Element(NameId),
+    /// Text.
+    Text(&'a str),
+    /// A comment, with its text.
+    Comment(&'a str),
+    /// A processing instruction, with its target and its data.
+    ProcessingInstruction(NameId, Option<&'a str>),
+    /// An attribute node, with its name and value.
+    Attribute(NameId, &'a str),
+    /// A namespace node, with its prefix and the namespace it binds.
+    Namespace(PrefixId, NamespaceId),
+}
+
+impl NodeView<'_> {
+    /// The [`ValueType`] of the node that was read.
+    pub fn value_type(&self) -> ValueType {
+        match self {
+            NodeView::Document => ValueType::Document,
+            NodeView::Element(_) => ValueType::Element,
+            NodeView::Text(_) => ValueType::Text,
+            NodeView::Comment(_) => ValueType::Comment,
+            NodeView::ProcessingInstruction(..) => ValueType::ProcessingInstruction,
+            NodeView::Attribute(..) => ValueType::Attribute,
+            NodeView::Namespace(..) => ValueType::Namespace,
+        }
     }
 }
 
@@ -298,7 +378,7 @@ impl ProcessingInstruction {
 }
 
 /// Represents a namespace node.
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct Namespace {
     pub(crate) prefix_id: PrefixId,
     pub(crate) namespace_id: NamespaceId,

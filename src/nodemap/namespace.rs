@@ -6,6 +6,8 @@ use super::core::{key_bit, MutableNodeMap, NodeMap, ValueAdapter};
 pub struct NamespaceAdapter {}
 
 impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
+    type Read<'a> = NamespaceId;
+
     #[inline]
     fn matches(value: &Value) -> bool {
         matches!(value, Value::Namespace(_))
@@ -59,6 +61,14 @@ impl ValueAdapter<PrefixId, NamespaceId> for NamespaceAdapter {
     fn value(value: &Value) -> &NamespaceId {
         match value {
             Value::Namespace(Namespace { namespace_id, .. }) => namespace_id,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    fn read(value: &Value) -> Self::Read<'_> {
+        match value {
+            Value::Namespace(Namespace { namespace_id, .. }) => *namespace_id,
             _ => unreachable!(),
         }
     }

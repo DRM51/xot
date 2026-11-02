@@ -238,7 +238,7 @@ pub(crate) mod oracle {
                     }
 
                     for (prefix_id, namespace_id) in namespaces.iter() {
-                        yield_!(Output::Prefix(prefix_id, *namespace_id,));
+                        yield_!(Output::Prefix(prefix_id, namespace_id,));
                     }
 
                     for (name_id, value) in xot.attributes(node).iter() {
@@ -315,7 +315,7 @@ mod tests {
             .namespaces_in_scope(b)
             .filter(|(p, _)| !xot.namespaces(b).contains_key(*p))
             .collect();
-        let own: Vec<_> = xot.namespaces(b).iter().map(|(p, n)| (p, *n)).collect();
+        let own: Vec<_> = xot.namespaces(b).iter().collect();
         let mut expected = in_scope;
         expected.extend(own);
         assert_eq!(prefixes, expected);

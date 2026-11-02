@@ -1,4 +1,4 @@
-use xot::{Error, Value, Xot};
+use xot::{Error, NodeView, Value, Xot};
 
 #[test]
 fn test_manipulate_text() {
@@ -146,8 +146,8 @@ fn test_append_text_after_text_consolidates_nodes() {
     let el_id = xot.document_element(doc).unwrap();
     xot.append_text(el_id, "Alpha").unwrap();
     xot.append_text(el_id, "Beta").unwrap();
-    match xot.value(xot.first_child(el_id).unwrap()) {
-        Value::Text(node) => assert_eq!(node.get(), "AlphaBeta"),
+    match xot.view(xot.first_child(el_id).unwrap()) {
+        NodeView::Text(text) => assert_eq!(text, "AlphaBeta"),
         _ => panic!("Expected text node"),
     }
     assert_eq!(xot.to_string(doc).unwrap(), r#"<doc>AlphaBeta</doc>"#);
@@ -176,8 +176,8 @@ fn test_append_text_after_text_consolidates_nodes_direct_append() {
     let txt2 = xot.new_text("Beta");
     xot.append(el_id, txt1).unwrap();
     xot.append(el_id, txt2).unwrap();
-    match xot.value(xot.first_child(el_id).unwrap()) {
-        Value::Text(node) => assert_eq!(node.get(), "AlphaBeta"),
+    match xot.view(xot.first_child(el_id).unwrap()) {
+        NodeView::Text(text) => assert_eq!(text, "AlphaBeta"),
         _ => panic!("Expected text node"),
     }
     assert_eq!(xot.to_string(doc).unwrap(), r#"<doc>AlphaBeta</doc>"#);
@@ -206,7 +206,7 @@ fn test_insert_before_consolidate_text() {
     let el_id = xot.first_child(xot.document_element(doc).unwrap()).unwrap();
     let txt = xot.new_text("Beta");
     xot.insert_before(el_id, txt).unwrap();
-    assert_eq!(xot.text(el_id).map(|n| n.get()), Some("BetaAlpha"));
+    assert_eq!(xot.text_str(el_id), Some("BetaAlpha"));
     assert_eq!(xot.to_string(doc).unwrap(), r#"<doc>BetaAlpha</doc>"#);
 }
 
@@ -217,7 +217,7 @@ fn test_insert_after_consolidate_text() {
     let el_id = xot.first_child(xot.document_element(doc).unwrap()).unwrap();
     let txt = xot.new_text("Beta");
     xot.insert_after(el_id, txt).unwrap();
-    assert_eq!(xot.text(el_id).map(|n| n.get()), Some("AlphaBeta"));
+    assert_eq!(xot.text_str(el_id), Some("AlphaBeta"));
     assert_eq!(xot.to_string(doc).unwrap(), r#"<doc>AlphaBeta</doc>"#);
 }
 
@@ -229,7 +229,7 @@ fn test_prepend_consolidate_text() {
     let txt = xot.new_text("Beta");
     xot.prepend(el_id, txt).unwrap();
     let text_el_id = xot.first_child(el_id).unwrap();
-    assert_eq!(xot.text(text_el_id).map(|n| n.get()), Some("BetaAlpha"));
+    assert_eq!(xot.text_str(text_el_id), Some("BetaAlpha"));
     assert_eq!(xot.to_string(doc).unwrap(), r#"<doc>BetaAlpha</doc>"#);
 }
 
@@ -470,8 +470,8 @@ fn test_clone_attribute_node() {
     // change original won't affect the clone
     xot.attributes_mut(a_id).insert(f, "Changed".to_string());
 
-    if let Value::Attribute(attribute) = xot.value(attribute_node) {
-        assert_eq!(attribute.value(), "F");
+    if let NodeView::Attribute(_, value) = xot.view(attribute_node) {
+        assert_eq!(value, "F");
     } else {
         panic!("Expected attribute node");
     }
@@ -519,8 +519,8 @@ fn test_clone_namespace_node() {
     // change original won't affect the clone
     xot.namespaces_mut(a_id).insert(f, dummy);
 
-    if let Value::Namespace(namespace) = xot.value(namespace_node) {
-        assert_eq!(namespace.namespace(), f_namespace);
+    if let NodeView::Namespace(_, namespace) = xot.view(namespace_node) {
+        assert_eq!(namespace, f_namespace);
     } else {
         panic!("Expected namespace node");
     }
@@ -764,7 +764,7 @@ fn test_clone_with_prefixes_non_element() {
         r#"<doc xmlns="http://example.com"><a>Goodbye!</a></doc>"#
     );
 
-    assert_eq!(xot.text(text_id_clone).unwrap().get(), "Hello!");
+    assert_eq!(xot.text_str(text_id_clone).unwrap(), "Hello!");
 }
 
 #[test]

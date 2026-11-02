@@ -23,7 +23,7 @@ fn write_by_walk(xot: &Xot, parameters: &Parameters, root: Node) -> Result<Vec<u
             NodeEdge::Start(node) => match xot.value_type(node) {
                 ValueType::Element => {
                     declarations.clear();
-                    declarations.extend(xot.namespaces(node).iter().map(|(p, n)| (p, *n)));
+                    declarations.extend(xot.namespaces(node).iter());
                     let has_child = xot.first_child(node).is_some();
                     writer.start_element(xot, node, &declarations, has_child)?;
                 }
@@ -38,8 +38,8 @@ fn write_by_walk(xot: &Xot, parameters: &Parameters, root: Node) -> Result<Vec<u
                 }
                 ValueType::Comment => writer.comment(xot, xot.comment_str(node).unwrap(), node)?,
                 ValueType::ProcessingInstruction => {
-                    let pi = xot.processing_instruction(node).unwrap();
-                    writer.processing_instruction(xot, pi.target(), pi.data(), node)?;
+                    let (target, data) = xot.processing_instruction(node).unwrap();
+                    writer.processing_instruction(xot, target, data, node)?;
                 }
                 _ => {}
             },

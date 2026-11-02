@@ -463,7 +463,7 @@ fn test_parse_processing_instruction_line_ends() {
     let doc_el = xot.document_element(doc).unwrap();
     let pi = xot.first_child(doc_el).unwrap();
     assert_eq!(
-        xot.processing_instruction(pi).unwrap().data(),
+        xot.processing_instruction(pi).unwrap().1,
         Some("x\u{A}y\u{A}z")
     );
 }
@@ -875,7 +875,7 @@ fn declared_namespace(xml: &str, prefix: &str) -> String {
     let doc = xot.parse(xml).unwrap();
     let doc_el = xot.document_element(doc).unwrap();
     let prefix = xot.add_prefix(prefix);
-    let namespace = xot.namespaces(doc_el).get(prefix).copied().unwrap();
+    let namespace = xot.namespaces(doc_el).get(prefix).unwrap();
     xot.namespace_str(namespace).to_string()
 }
 
@@ -963,14 +963,14 @@ fn test_parse_prefixed_xmlns_is_attribute() {
     // `p` is the only prefix declared
     let p = xot.prefix("p").unwrap();
     let urn_p = xot.namespace("urn:p").unwrap();
-    let declarations: Vec<_> = xot.namespaces(a).iter().map(|(p, n)| (p, *n)).collect();
+    let declarations: Vec<_> = xot.namespaces(a).iter().collect();
     assert_eq!(declarations, vec![(p, urn_p)]);
     // `p:xmlns` is the only attribute
     let xmlns = xot.name_ns("xmlns", urn_p).unwrap();
     let attributes: Vec<_> = xot
         .attributes(a)
         .iter()
-        .map(|(name, value)| (name, value.clone()))
+        .map(|(name, value)| (name, value.to_string()))
         .collect();
     assert_eq!(attributes, vec![(xmlns, "urn:v".to_string())]);
 }
@@ -1069,7 +1069,7 @@ fn test_parse_processing_instruction_targets_starting_with_xml() {
     let targets: Vec<_> = xot
         .children(doc)
         .filter_map(|node| xot.processing_instruction(node))
-        .map(|pi| xot.local_name_str(pi.target()).to_string())
+        .map(|(target, _)| xot.local_name_str(target).to_string())
         .collect();
     assert_eq!(targets, ["xml-stylesheet", "xmlfoo"]);
 }
@@ -1256,7 +1256,8 @@ fn test_parse_keeps_changed_values_in_strings_of_their_length() {
     let b = xot.add_name("b");
     let c = xot.add_name("c");
     for (name, expected) in [(b, "x < y & z"), (c, "one two")] {
-        let value = xot.attributes(a).get(name).unwrap();
+        let attributes = xot.attributes_mut(a);
+        let value = attributes.get(name).unwrap();
         assert_eq!(value, expected);
         assert_eq!(value.capacity(), value.len());
     }

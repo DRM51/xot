@@ -86,12 +86,7 @@ impl<'a, N: Normalizer> Html5Renderer<'a, N> {
         use Output::*;
         match output {
             StartTagOpen(element) => {
-                let pushed = self.scope.push(
-                    self.xot
-                        .namespaces(node)
-                        .iter()
-                        .map(|(prefix, namespace)| (prefix, *namespace)),
-                );
+                let pushed = self.scope.push(self.xot.namespaces(node).iter());
                 self.pushed.push(pushed);
                 let namespace_id = self.xot.namespace_for_name(element.name());
                 if self

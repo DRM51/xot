@@ -8,6 +8,9 @@ use crate::{Node, Value, Xot};
 use super::entry::{Entry, OccupiedEntry, VacantEntry};
 
 pub trait ValueAdapter<K, V> {
+    // what a read of the value of an entry gives: a string slice for an
+    // attribute, the namespace id for a namespace
+    type Read<'a>: Copy;
     fn matches(value: &Value) -> bool;
     // the nodes of the map with their values, in order
     fn entries(xot: &Xot, parent: Node) -> impl Iterator<Item = (Node, &Value)> + '_;
@@ -29,6 +32,7 @@ pub trait ValueAdapter<K, V> {
     // the bit of a key in a filter of 64 bits (see `key_bit`)
     fn key_bit(key: K) -> u64;
     fn value(value: &Value) -> &V;
+    fn read(value: &Value) -> Self::Read<'_>;
     fn value_mut(value: &mut Value) -> &mut V;
     fn create(key: K, value: V) -> Value;
     fn update(value: &mut Value, value: V) -> Option<V>;
@@ -114,11 +118,14 @@ where
         false
     }
 
-    /// Return a reference to the value stored for `key`, if it is present, else `None`.
-    pub fn get(&self, key: impl Into<K> + Copy) -> Option<&'a V> {
+    /// Return the value stored for `key`, if it is present, else `None`.
+    ///
+    /// The value is read by value: a string slice for an attribute, a
+    /// [`NamespaceId`](crate::NamespaceId) for a namespace.
+    pub fn get(&self, key: impl Into<K> + Copy) -> Option<A::Read<'a>> {
         self.entries()
             .find(|(_, value)| A::key(value) == key.into())
-            .map(|(_, value)| A::value(value))
+            .map(|(_, value)| A::read(value))
     }
 
     fn iter_value(&self) -> impl Iterator<Item = &'a Value> + '_ {
@@ -126,25 +133,28 @@ where
     }
 
     /// An iterator visiting all key-value pairs in insertion order. The iterator element type is
-    /// `(&'a K, &'a V)`.
-    pub fn iter(&self) -> impl Iterator<Item = (K, &'a V)> + '_ {
+    /// `(K, A::Read<'a>)`: the key, and the value read by value.
+    pub fn iter(&self) -> impl Iterator<Item = (K, A::Read<'a>)> + '_ {
         self.iter_value()
-            .map(|value| (A::key(value), A::value(value)))
+            .map(|value| (A::key(value), A::read(value)))
     }
 
     /// Copies the map entries into a new `Vec<(K, V)>`.
     pub fn to_vec(&self) -> Vec<(K, V)> {
-        self.iter().map(|(k, v)| (k, v.clone())).collect()
+        self.iter_value()
+            .map(|value| (A::key(value), A::value(value).clone()))
+            .collect()
     }
 
-    /// An iterator visiting all keys in insertion order. The iterator element type is `&'a K`.
+    /// An iterator visiting all keys in insertion order. The iterator element type is `K`.
     pub fn keys(&self) -> impl Iterator<Item = K> + '_ {
         self.iter_value().map(move |value| A::key(value))
     }
 
-    /// An iterator visiting all values in insertion order. The iterator element type is `&'a V`.
-    pub fn values(&self) -> impl Iterator<Item = &'a V> + '_ {
-        self.iter_value().map(move |value| A::value(value))
+    /// An iterator visiting all values in insertion order, read by value. The
+    /// iterator element type is `A::Read<'a>`.
+    pub fn values(&self) -> impl Iterator<Item = A::Read<'a>> + '_ {
+        self.iter_value().map(move |value| A::read(value))
     }
 
     /// An iterator visiting all the nodes in insertion order.
@@ -155,8 +165,8 @@ where
     /// Convert into a hashmap
     pub fn to_hashmap(&self) -> AHashMap<K, V> {
         let mut m = AHashMap::new();
-        for (key, value) in self.iter() {
-            m.insert(key, value.clone());
+        for value in self.iter_value() {
+            m.insert(A::key(value), A::value(value).clone());
         }
         m
     }
@@ -495,7 +505,7 @@ mod tests {
         let a = xot.add_name("a");
         let document_element = xot.document_element(root.unwrap()).unwrap();
         let attributes = xot.attributes(document_element);
-        assert_eq!(attributes.get(a), Some(&"A".to_string()));
+        assert_eq!(attributes.get(a), Some("A"));
     }
 
     #[test]
@@ -588,7 +598,7 @@ mod tests {
             .and_modify(|e| *e = "C!".to_string())
             .or_insert("New".to_string());
         let attributes = xot.attributes(document_element);
-        assert_eq!(attributes.get(c), Some(&"C!".to_string()));
+        assert_eq!(attributes.get(c), Some("C!"));
     }
 
     #[test]
@@ -603,7 +613,7 @@ mod tests {
             .and_modify(|e| *e = "C!".to_string())
             .or_insert("New".to_string());
         let attributes = xot.attributes(document_element);
-        assert_eq!(attributes.get(c), Some(&"New".to_string()));
+        assert_eq!(attributes.get(c), Some("New"));
     }
 
     #[test]
@@ -616,9 +626,9 @@ mod tests {
         let foo_ns = xot.add_namespace("FOO");
         let document_element = xot.document_element(root.unwrap()).unwrap();
         let attributes = xot.attributes(document_element);
-        assert_eq!(attributes.get(a), Some(&"A".to_string()));
+        assert_eq!(attributes.get(a), Some("A"));
         let namespaces = xot.namespaces(document_element);
-        assert_eq!(namespaces.get(foo_prefix), Some(&foo_ns));
+        assert_eq!(namespaces.get(foo_prefix), Some(foo_ns));
     }
 }
 

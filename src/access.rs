@@ -356,8 +356,8 @@ impl Xot {
 
     /// Attributes accessor.
     ///
-    /// Returns a map of [`crate::NameId`] to a String reference representing the
-    /// attributes on the element.
+    /// Returns a map of [`crate::NameId`] to the attribute value, as a string
+    /// slice, representing the attributes on the element.
     ///
     /// Note that if this is called on a non-element node, you get an empty
     /// map.
@@ -369,7 +369,7 @@ impl Xot {
     /// let p = xot.document_element(root).unwrap();
     /// let attributes = xot.attributes(p);
     ///
-    /// assert_eq!(attributes.get(a), Some(&"A".to_string()));
+    /// assert_eq!(attributes.get(a), Some("A"));
     /// ```
     pub fn attributes(&self, node: Node) -> Attributes<'_> {
         Attributes::new(self, node)
@@ -380,13 +380,13 @@ impl Xot {
     /// Note that if this is invoked non a non-element it's always going to
     /// return None
     pub fn get_attribute(&self, node: Node, name: NameId) -> Option<&str> {
-        self.attributes(node).get(name).map(String::as_str)
+        self.attributes(node).get(name)
     }
 
     /// Namespaces accessor.
     ///
-    /// Returns a map of [`crate::PrefixId`] to [`crate::NamespaceId`] representing
-    /// the namespace declarations on the element.
+    /// Returns a map of [`crate::PrefixId`] to [`crate::NamespaceId`] (by
+    /// value) representing the namespace declarations on the element.
     ///
     /// Note that if this is called on a non-element node, you get an empty
     /// map.
@@ -399,7 +399,7 @@ impl Xot {
     /// let p = xot.document_element(root).unwrap();
     /// let namespaces = xot.namespaces(p);
     ///
-    /// assert_eq!(namespaces.get(foo_prefix), Some(&foo_ns));
+    /// assert_eq!(namespaces.get(foo_prefix), Some(foo_ns));
     /// ```
     pub fn namespaces(&self, node: Node) -> Namespaces<'_> {
         Namespaces::new(self, node)
@@ -410,7 +410,7 @@ impl Xot {
     /// Note that if this is invoked non a non-element it's always going to
     /// return None
     pub fn get_namespace(&self, node: Node, prefix: PrefixId) -> Option<NamespaceId> {
-        self.namespaces(node).get(prefix).copied()
+        self.namespaces(node).get(prefix)
     }
 
     /// Copy the namespace declarations as a prefixes hash table.
@@ -420,17 +420,14 @@ impl Xot {
     pub fn prefixes(&self, node: Node) -> Prefixes {
         let mut prefixes = Prefixes::new();
         for (prefix, ns) in self.namespaces(node).iter() {
-            prefixes.insert(prefix, *ns);
+            prefixes.insert(prefix, ns);
         }
         prefixes
     }
 
     /// Copy the namespace declarations as a namespace declarations vec.
     pub fn namespace_declarations(&self, node: Node) -> NamespaceDeclarations {
-        self.namespaces(node)
-            .iter()
-            .map(|(prefix, ns)| (prefix, *ns))
-            .collect()
+        self.namespaces(node).iter().collect()
     }
 
     pub(crate) fn has_namespace_declarations(&self, node: Node) -> bool {

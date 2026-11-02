@@ -31,12 +31,14 @@
 //! [`Xot::children`]. You then use operations such as [`Xot::append`] to
 //! manipulate the tree.
 //!
-//! To access and manipulate XML specific data, you use the [`Value`] for a
-//! node. This is an enum that's either an [`Element`], [`Text`], [`Comment`]
-//! or [`ProcessingInstruction`], [`Attribute`], [`Namespace`] or `Document`
-//! (which has no value). You can use [`Xot::value`] to get the [`Value`].
-//! Sometimes it's more handy to use the specific accessors for a value, such a
-//! [`Xot::element`] or [`Xot::text`].
+//! To read XML specific data, you use [`Xot::view`], which returns a
+//! [`NodeView`] for a node. This is an enum that's either an element (with
+//! its name), text, a comment, a processing instruction, an attribute, a
+//! namespace or the document, and it holds what the node holds by value:
+//! names and ids, and string slices for text. Sometimes it's more handy to
+//! use the specific accessors, such as [`Xot::element`] or [`Xot::text_str`].
+//! To manipulate XML specific data, you use the [`Value`] of a node, through
+//! [`Xot::value_mut`] or accessors such as [`Xot::text_mut`].
 //!
 //! XML names and namespaces in Xot are referenced by ids. In order to
 //! construct or compare an element, you first need to get hold of a name. To
@@ -97,6 +99,7 @@ pub use parse::{Span, SpanInfo, SpanInfoKey};
 pub use parsedtree::ParsedTree;
 pub use serialize::Html5;
 pub use xmlvalue::{
-    Attribute, Comment, Element, Namespace, Prefixes, ProcessingInstruction, Text, Value, ValueType,
+    Attribute, Comment, Element, Namespace, NodeView, Prefixes, ProcessingInstruction, Text, Value,
+    ValueType,
 };
 pub use xotdata::{Node, Xot};

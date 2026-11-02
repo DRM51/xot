@@ -6,6 +6,8 @@ use super::core::{key_bit, MutableNodeMap, NodeMap, ValueAdapter};
 pub struct AttributeAdapter {}
 
 impl ValueAdapter<NameId, String> for AttributeAdapter {
+    type Read<'a> = &'a str;
+
     #[inline]
     fn matches(value: &Value) -> bool {
         matches!(value, Value::Attribute(_))
@@ -67,6 +69,14 @@ impl ValueAdapter<NameId, String> for AttributeAdapter {
     fn value(value: &Value) -> &String {
         match value {
             Value::Attribute(Attribute { value, .. }) => value,
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    fn read(value: &Value) -> Self::Read<'_> {
+        match value {
+            Value::Attribute(Attribute { value, .. }) => value.as_str(),
             _ => unreachable!(),
         }
     }

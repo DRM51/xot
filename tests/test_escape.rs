@@ -1,15 +1,15 @@
 use proptest::prelude::*;
-use xot::{output, output::TokenSerializeParameters, Error, Node, Value, Xot};
+use xot::{output, output::TokenSerializeParameters, Error, Node, NodeView, Xot};
 
 #[test]
 fn test_escape_in_text() {
     let mut xot = Xot::new();
     let doc = xot.parse(r#"<a>&lt;</a>"#).unwrap();
     let text_id = xot.first_child(xot.document_element(doc).unwrap()).unwrap();
-    assert!(matches!(xot.value(text_id), Value::Text(_)));
-    match xot.value(text_id) {
-        Value::Text(text) => {
-            assert_eq!(text.get(), "<");
+    assert!(matches!(xot.view(text_id), NodeView::Text(_)));
+    match xot.view(text_id) {
+        NodeView::Text(text) => {
+            assert_eq!(text, "<");
         }
         _ => unreachable!(),
     }

@@ -844,7 +844,7 @@ fn insert_and_insert_node_return_what_they_did() {
     let node = xot.new_namespace_node(b, two);
     let updated = xot.append_namespace_node(doc, node).unwrap();
     assert_ne!(updated, node);
-    assert_eq!(xot.namespaces(doc).get(b), Some(&two));
+    assert_eq!(xot.namespaces(doc).get(b), Some(two));
     let y = xot.add_name("y");
     let node = xot.new_attribute_node(y, "3".to_string());
     assert_eq!(xot.append_attribute_node(doc, node).unwrap(), node);

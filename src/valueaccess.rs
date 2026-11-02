@@ -1,16 +1,20 @@
 use crate::access::NodeEdge;
 use crate::xmlvalue::{
-    Attribute, Comment, Element, Namespace, ProcessingInstruction, Text, Value, ValueType,
+    Attribute, Comment, Element, Namespace, NodeView, ProcessingInstruction, Text, Value, ValueType,
 };
 use crate::xotdata::{Node, Xot};
 use crate::NameId;
 
 /// ## Value and type access
 impl Xot {
-    /// Access to the XML value for this node.
+    /// Read the value of this node, by value.
+    ///
+    /// The result is a [`NodeView`]: the kind of the node with what it holds,
+    /// names and ids by value and text, comments, processing instruction data
+    /// and attribute values as string slices.
     ///
     /// ```rust
-    /// use xot::{Xot, Value};
+    /// use xot::{NodeView, Xot};
     ///
     /// let mut xot = Xot::new();
     ///
@@ -18,9 +22,9 @@ impl Xot {
     /// let doc_el = xot.document_element(root).unwrap();
     /// let doc_name = xot.name("doc").unwrap();
     ///
-    /// match xot.value(doc_el) {
-    ///    Value::Element(element) => {
-    ///       assert_eq!(element.name(), doc_name);
+    /// match xot.view(doc_el) {
+    ///    NodeView::Element(name) => {
+    ///       assert_eq!(name, doc_name);
     ///   }
     ///   _ => { }
     /// }
@@ -31,7 +35,13 @@ impl Xot {
     /// only interested in a single type, you can use the convenience
     /// methods like [`Xot::element`].
     #[inline]
-    pub fn value(&self, node_id: Node) -> &Value {
+    pub fn view(&self, node: Node) -> NodeView<'_> {
+        self.value(node).view()
+    }
+
+    /// The stored value of this node, for use inside xot.
+    #[inline]
+    pub(crate) fn value(&self, node_id: Node) -> &Value {
         self.arena.get(node_id.get())
     }
 
@@ -199,41 +209,12 @@ impl Xot {
         self.value_type(node) == ValueType::Attribute
     }
 
-    /// If this node's value is text, return a reference to it.
-    ///
-    /// Note that [`Xot::text_str()`] is a more convenient way to
-    /// get the text value as a string slice.
+    /// If this node's value is text, return the string.
     ///
     /// See also [`Xot::text_mut()`] if you want to manipulate
     /// a text value.
     ///
     /// ```rust
-    /// use xot::Xot;
-    ///
-    /// let mut xot = Xot::new();
-    /// let root = xot.parse("<doc>Example</doc>")?;
-    /// let doc_el = xot.document_element(root).unwrap();
-    /// let text_node = xot.first_child(doc_el).unwrap();
-    ///
-    /// assert_eq!(xot.text(text_node).unwrap().get(), "Example");
-    /// assert!(xot.text(doc_el).is_none());
-    ///
-    /// # Ok::<(), xot::Error>(())
-    /// ```
-    #[inline]
-    pub fn text(&self, node: Node) -> Option<&Text> {
-        let xml_node = self.value(node);
-        if let Value::Text(text) = xml_node {
-            Some(text)
-        } else {
-            None
-        }
-    }
-
-    /// If this node's value is text, return a reference to the string.
-    ///
-    /// ```rust
-    ///
     /// use xot::Xot;
     ///
     /// let mut xot = Xot::new();
@@ -248,7 +229,10 @@ impl Xot {
     /// ```
     #[inline]
     pub fn text_str(&self, node: Node) -> Option<&str> {
-        self.text(node).map(|n| n.get())
+        match self.value(node) {
+            Value::Text(text) => Some(text.get()),
+            _ => None,
+        }
     }
 
     /// If this node's value is a text, return a mutable reference to it.
@@ -293,7 +277,13 @@ impl Xot {
         }
     }
 
-    /// If this node's value is an element, return a reference to it.
+    /// If this node's value is an element, return it.
+    ///
+    /// The [`Element`] is returned by value; it holds the name of the
+    /// element.
+    ///
+    /// See also [`Xot::element_mut()`] if you want to manipulate
+    /// an element value.
     ///
     /// ```rust
     /// use xot::Xot;
@@ -302,7 +292,7 @@ impl Xot {
     /// let root = xot.parse(r#"<doc><child a="A"/></doc>"#)?;
     /// let doc_el = xot.document_element(root).unwrap();
     /// let child_el = xot.first_child(doc_el).unwrap();
-    ///    
+    ///
     /// let element = xot.element(child_el).unwrap();
     ///
     /// let child_name = xot.name("child").unwrap();
@@ -311,12 +301,10 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     #[inline]
-    pub fn element(&self, node: Node) -> Option<&Element> {
-        let xml_node = self.value(node);
-        if let Value::Element(element) = xml_node {
-            Some(element)
-        } else {
-            None
+    pub fn element(&self, node: Node) -> Option<Element> {
+        match self.value(node) {
+            Value::Element(element) => Some(*element),
+            _ => None,
         }
     }
 
@@ -348,42 +336,6 @@ impl Xot {
         } else {
             None
         }
-    }
-
-    /// If this element has only a single text child, return a reference to it.
-    ///
-    /// If the element has no children or more than one child, return `None`.
-    ///
-    /// Note that [`Xot::text_content_str()`] is a more convenient way to get
-    /// the text value as a string slice.
-    ///
-    /// See also [`Xot::text_content_mut()`] if you want to manipulate a text value.
-    ///
-    /// ```rust
-    /// use xot::Xot;
-    ///
-    /// let mut xot = Xot::new();
-    /// let root = xot.parse("<doc><a>Example</a><b/></doc>")?;
-    /// let doc_el = xot.document_element(root).unwrap();
-    /// let a_el = xot.first_child(doc_el).unwrap();
-    /// let b_el = xot.next_sibling(a_el).unwrap();
-    ///
-    /// let text = xot.text_content(a_el).unwrap();
-    ///
-    /// assert_eq!(text.get(), "Example");
-    /// assert!(xot.text_content(b_el).is_none());
-    /// # Ok::<(), xot::Error>(())
-    /// ```
-    pub fn text_content(&self, node: Node) -> Option<&Text> {
-        if let Some(child) = self.first_child(node) {
-            if self.next_sibling(child).is_some() {
-                return None;
-            }
-            if let Some(text) = self.text(child) {
-                return Some(text);
-            }
-        }
-        None
     }
 
     /// If this element has only a single text child, return a mutable reference to it.
@@ -457,27 +409,22 @@ impl Xot {
     /// # Ok::<(), xot::Error>(())
     /// ```
     pub fn text_content_str(&self, node: Node) -> Option<&str> {
-        if self.first_child(node).is_none() {
+        let Some(child) = self.first_child(node) else {
             return Some("");
+        };
+        if self.next_sibling(child).is_some() {
+            return None;
         }
-        self.text_content(node).map(|n| n.get())
+        self.text_str(child)
     }
 
-    /// If this node's value is a comment, return a reference to it.
-    #[inline]
-    pub fn comment(&self, node: Node) -> Option<&Comment> {
-        let xml_node = self.value(node);
-        if let Value::Comment(comment) = xml_node {
-            Some(comment)
-        } else {
-            None
-        }
-    }
-
-    /// If this node's value is a comment, return a reference to the string.
+    /// If this node's value is a comment, return the string.
     #[inline]
     pub fn comment_str(&self, node: Node) -> Option<&str> {
-        self.comment(node).map(|n| n.get())
+        match self.value(node) {
+            Value::Comment(comment) => Some(comment.get()),
+            _ => None,
+        }
     }
 
     /// If this node's value is a comment, return a mutable reference to it.
@@ -491,14 +438,28 @@ impl Xot {
         }
     }
 
-    /// If this node's value is a processing instruction, return a reference to it.
+    /// If this node's value is a processing instruction, return its target
+    /// and its data.
+    ///
+    /// ```rust
+    /// use xot::Xot;
+    ///
+    /// let mut xot = Xot::new();
+    /// let root = xot.parse("<doc><?pi data?></doc>")?;
+    /// let doc_el = xot.document_element(root).unwrap();
+    /// let pi_node = xot.first_child(doc_el).unwrap();
+    ///
+    /// let (target, data) = xot.processing_instruction(pi_node).unwrap();
+    /// assert_eq!(xot.local_name_str(target), "pi");
+    /// assert_eq!(data, Some("data"));
+    /// assert!(xot.processing_instruction(doc_el).is_none());
+    /// # Ok::<(), xot::Error>(())
+    /// ```
     #[inline]
-    pub fn processing_instruction(&self, node: Node) -> Option<&ProcessingInstruction> {
-        let xml_node = self.value(node);
-        if let Value::ProcessingInstruction(pi) = xml_node {
-            Some(pi)
-        } else {
-            None
+    pub fn processing_instruction(&self, node: Node) -> Option<(NameId, Option<&str>)> {
+        match self.value(node) {
+            Value::ProcessingInstruction(pi) => Some((pi.target(), pi.data())),
+            _ => None,
         }
     }
 
@@ -513,14 +474,15 @@ impl Xot {
         }
     }
 
-    /// Access namespace node value
+    /// If this node's value is a namespace node, return it.
+    ///
+    /// The [`Namespace`] is returned by value; it holds the prefix and the
+    /// namespace.
     #[inline]
-    pub fn namespace_node(&self, node: Node) -> Option<&Namespace> {
-        let xml_node = self.value(node);
-        if let Value::Namespace(namespace) = xml_node {
-            Some(namespace)
-        } else {
-            None
+    pub fn namespace_node(&self, node: Node) -> Option<Namespace> {
+        match self.value(node) {
+            Value::Namespace(namespace) => Some(*namespace),
+            _ => None,
         }
     }
 
@@ -535,14 +497,27 @@ impl Xot {
         }
     }
 
-    /// Access attribute node value
+    /// If this node's value is an attribute node, return its name and its
+    /// value.
+    ///
+    /// ```rust
+    /// use xot::Xot;
+    ///
+    /// let mut xot = Xot::new();
+    /// let root = xot.parse(r#"<doc a="A"/>"#)?;
+    /// let doc_el = xot.document_element(root).unwrap();
+    /// let a = xot.name("a").unwrap();
+    /// let attribute_node = xot.attributes(doc_el).get_node(a).unwrap();
+    ///
+    /// assert_eq!(xot.attribute_node(attribute_node), Some((a, "A")));
+    /// assert!(xot.attribute_node(doc_el).is_none());
+    /// # Ok::<(), xot::Error>(())
+    /// ```
     #[inline]
-    pub fn attribute_node(&self, node: Node) -> Option<&Attribute> {
-        let xml_node = self.value(node);
-        if let Value::Attribute(attribute) = xml_node {
-            Some(attribute)
-        } else {
-            None
+    pub fn attribute_node(&self, node: Node) -> Option<(NameId, &str)> {
+        match self.value(node) {
+            Value::Attribute(attribute) => Some((attribute.name(), attribute.value())),
+            _ => None,
         }
     }
 

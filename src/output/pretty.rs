@@ -135,9 +135,7 @@ where
 
     fn element_space(&self, node: Node) -> Space {
         let attributes = self.xot.attributes(node);
-        let space = attributes
-            .get(self.xot.xml_space_name())
-            .map(|s| s.as_str());
+        let space = attributes.get(self.xot.xml_space_name());
         match space {
             Some("preserve") => Space::Preserve,
             Some("default") => Space::Default,

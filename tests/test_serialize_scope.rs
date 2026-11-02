@@ -22,7 +22,7 @@ fn duplicate_declaration(xot: &mut Xot) -> Node {
     let p = xot.add_prefix("p");
     let urn_q = xot.add_namespace("urn:q");
     let other = xot.new_namespace_node(p, urn_q);
-    let value = xot.value(other).clone();
+    let value = xot.value_mut(other).clone();
     *xot.value_mut(nodes[1]) = value;
     for (name, ns) in [("a", "urn:p"), ("b", "urn:q")] {
         let ns = xot.add_namespace(ns);

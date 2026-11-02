@@ -182,12 +182,12 @@ fn remove_consolidate_by_copies(
     let (Some(prev_node), Some(next_node)) = (prev_node, next_node) else {
         return false;
     };
-    let prev_text = xot.text(prev_node);
-    let next_text = xot.text(next_node);
+    let prev_text = xot.text_str(prev_node);
+    let next_text = xot.text_str(next_node);
     let (Some(_), Some(next_text)) = (prev_text, next_text) else {
         return false;
     };
-    let to_add = next_text.get().to_string();
+    let to_add = next_text.to_string();
     let prev_text_mut = xot.text_mut(prev_node).unwrap();
     let mut s = prev_text_mut.get().to_string();
     s.push_str(&to_add);

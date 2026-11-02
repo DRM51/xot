@@ -236,7 +236,7 @@ fn a_root_turned_into_an_element_and_moved_drops_its_tree() {
         let tree_of_outer = xot.parsed_tree(outer).unwrap();
         let name = xot.add_name("x");
         let element = xot.new_element(name);
-        let value = xot.value(element).clone();
+        let value = xot.value_mut(element).clone();
         assert!(matches!(value, Value::Element(_)));
         *xot.value_mut(doc) = value;
         // a change of a value: still kept, the root checked at keep time only
